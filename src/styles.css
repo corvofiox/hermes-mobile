@@ -1509,3 +1509,35 @@ button {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* 上传圆形进度环 */
+.pending-file.uploading {
+  background: rgba(14, 143, 216, 0.06);
+}
+.file-progress-ring {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  transform: rotate(-90deg);
+}
+.file-progress-ring .ring-bg {
+  fill: none;
+  stroke: rgba(16, 49, 63, 0.12);
+  stroke-width: 3;
+}
+.file-progress-ring .ring-fg {
+  fill: none;
+  stroke: var(--accent2);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 94.2;
+  transition: stroke-dashoffset 0.2s ease;
+}
+.file-progress-ring .ring-text {
+  transform: rotate(90deg);
+  transform-origin: 18px 18px;
+  fill: var(--accent2);
+  font-size: 8px;
+  font-weight: 600;
+  text-anchor: middle;
+}

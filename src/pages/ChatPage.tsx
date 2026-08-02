@@ -45,6 +45,10 @@ interface PendingFile {
   size: number;
   /** file.attach 返回的 @file: 引用（发送时拼入 prompt） */
   refText: string;
+  /** 上传中（显示圆形进度环） */
+  uploading: boolean;
+  /** 上传进度 0-100 */
+  progress: number;
 }
 
 /**
@@ -497,7 +501,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
   };
 
-  /** 选择文件 → FileReader 转 data_url → file.attach 挂载到会话 */
+  /** 选择文件 → FileReader 转 data_url → file.attach 挂载到会话（带圆形进度环） */
   const pickFile = async (file: File) => {
     const liveId = liveSessionIdRef.current;
     if (!liveId) {
@@ -508,24 +512,47 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setStatus(`文件过大（上限 256MB）：${file.name}`);
       return;
     }
+    const fileId = nextId();
+    const updateProgress = (pct: number, done = false) => {
+      setPendingFiles((prev) =>
+        prev.map((f) => (f.id === fileId ? { ...f, progress: pct, uploading: !done } : f)),
+      );
+    };
+    // 先插入上传中条目（圆形进度环）
+    setPendingFiles((prev) => [
+      ...prev,
+      { id: fileId, name: file.name, size: file.size, refText: "", uploading: true, progress: 0 },
+    ]);
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
+        reader.onprogress = (e) => {
+          // 读取阶段进度映射 0-80%（剩余为传输与落盘）
+          if (e.lengthComputable && e.total > 0) {
+            updateProgress(Math.min(80, Math.round((e.loaded / e.total) * 80)));
+          }
+        };
+        reader.onload = () => {
+          updateProgress(90); // 读取完成，进入传输/落盘阶段
+          resolve(String(reader.result));
+        };
         reader.onerror = () => reject(new Error("读取文件失败"));
         reader.readAsDataURL(file);
       });
       const res = await gateway.attachFile(liveId, dataUrl, file.name);
       const refText = res.ref_text ?? "";
       if (res.attached && refText) {
-        setPendingFiles((prev) => [
-          ...prev,
-          { id: nextId(), name: res.name ?? file.name, size: file.size, refText },
-        ]);
+        updateProgress(100, true); // 完成：转为普通条目（停用进度环）
+        setPendingFiles((prev) =>
+          prev.map((f) => (f.id === fileId ? { ...f, refText, uploading: false } : f)),
+        );
       } else {
+        // attach 失败：移除条目并提示
+        setPendingFiles((prev) => prev.filter((f) => f.id !== fileId));
         setStatus(`文件附加失败：${file.name}`);
       }
     } catch (err) {
+      setPendingFiles((prev) => prev.filter((f) => f.id !== fileId));
       setStatus(`选择文件失败：${err instanceof Error ? err.message : String(err)}`);
     }
   };
@@ -806,20 +833,40 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         {/* 已附加文件预览条（独立一行） */}
         {pendingFiles.length > 0 && (
           <div className="pending-files">
-            {pendingFiles.map((f) => (
-              <div key={f.id} className="pending-file">
-                <span className="pending-file-icon">📄</span>
-                <span className="pending-file-name">{f.name}</span>
-                <span className="pending-file-size">{formatSize(f.size)}</span>
-                <button
-                  className="pending-file-remove"
-                  onClick={() => removePendingFile(f.id)}
-                  aria-label="移除文件"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
+            {pendingFiles.map((f) =>
+              f.uploading ? (
+                <div key={f.id} className="pending-file uploading">
+                  <svg className="file-progress-ring" viewBox="0 0 36 36">
+                    <circle cx="18" cy="18" r="15" className="ring-bg" />
+                    <circle
+                      cx="18"
+                      cy="18"
+                      r="15"
+                      className="ring-fg"
+                      style={{ strokeDashoffset: 94.2 * (1 - f.progress / 100) }}
+                    />
+                    <text x="18" y="21.5" className="ring-text">
+                      {f.progress}%
+                    </text>
+                  </svg>
+                  <span className="pending-file-name">{f.name}</span>
+                  <span className="pending-file-size">上传中…</span>
+                </div>
+              ) : (
+                <div key={f.id} className="pending-file">
+                  <span className="pending-file-icon">📄</span>
+                  <span className="pending-file-name">{f.name}</span>
+                  <span className="pending-file-size">{formatSize(f.size)}</span>
+                  <button
+                    className="pending-file-remove"
+                    onClick={() => removePendingFile(f.id)}
+                    aria-label="移除文件"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ),
+            )}
             <button className="btn btn-sm pending-add" onClick={() => fileInputRef.current?.click()}>
               ＋
             </button>
