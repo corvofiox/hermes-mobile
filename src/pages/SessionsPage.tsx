@@ -72,7 +72,7 @@ function sourceBadge(source?: string): { label: string; cls: string } {
   return { label: source.slice(0, 3), cls: "" };
 }
 
-type TabKey = "all" | "pinned" | "platform" | "cron" | "other" | "archived";
+type TabKey = "all" | "pinned" | "platform" | "cron" | "other";
 
 export type SessionTabKey = TabKey;
 
@@ -82,11 +82,10 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "other", label: "其他" },
   { key: "cron", label: "定时任务" },
   { key: "platform", label: "消息平台" },
-  { key: "archived", label: "归档" },
 ];
 
 /** 判断单个会话属于哪个分类 */
-function classifySession(s: RestSession): Exclude<TabKey, "all" | "archived"> {
+function classifySession(s: RestSession): Exclude<TabKey, "all"> {
   if (s.pinned) return "pinned";
   if (s.source === "cron") return "cron";
   if (s.source && PLATFORM_SOURCES.has(s.source)) return "platform";
@@ -95,8 +94,8 @@ function classifySession(s: RestSession): Exclude<TabKey, "all" | "archived"> {
 
 /** 按分类分组（用于"全部" tab） */
 function groupSessions(sessions: RestSession[]): { key: TabKey; title: string; items: RestSession[] }[] {
-  const order: Exclude<TabKey, "all" | "archived">[] = ["pinned", "other", "cron", "platform"];
-  const buckets: Record<Exclude<TabKey, "all" | "archived">, RestSession[]> = {
+  const order: Exclude<TabKey, "all">[] = ["pinned", "other", "cron", "platform"];
+  const buckets: Record<Exclude<TabKey, "all">, RestSession[]> = {
     pinned: [],
     platform: [],
     cron: [],
@@ -105,7 +104,7 @@ function groupSessions(sessions: RestSession[]): { key: TabKey; title: string; i
   for (const s of sessions) {
     buckets[classifySession(s)].push(s);
   }
-  const titles: Record<Exclude<TabKey, "all" | "archived">, string> = {
+  const titles: Record<Exclude<TabKey, "all">, string> = {
     pinned: "📌 置顶",
     platform: "💬 消息平台",
     cron: "⏰ 定时任务",
@@ -182,7 +181,6 @@ function useLongPress(onLongPress: () => void) {
 
 export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSession, onLogout }: Props) {
   const [sessions, setSessions] = useState<RestSession[]>([]);
-  const [archivedSessions, setArchivedSessions] = useState<RestSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [connState, setConnState] = useState(gateway.connectionState);
@@ -208,17 +206,16 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
   // 全部分组 + 各 tab 数量
   const groups = useMemo(() => groupSessions(sessions), [sessions]);
   const counts = useMemo(() => {
-    const c: Record<TabKey, number> = { all: sessions.length, pinned: 0, platform: 0, cron: 0, other: 0, archived: archivedSessions.length };
+    const c: Record<TabKey, number> = { all: sessions.length, pinned: 0, platform: 0, cron: 0, other: 0 };
     for (const s of sessions) c[classifySession(s)]++;
     return c;
-  }, [sessions, archivedSessions]);
+  }, [sessions]);
 
   // 当前 tab 的条目（全部 → 分组；分类 → 平铺该分类）
   const activeItems = useMemo(() => {
     if (activeTab === "all") return null;
-    if (activeTab === "archived") return archivedSessions;
     return sessions.filter((s) => classifySession(s) === activeTab);
-  }, [sessions, archivedSessions, activeTab]);
+  }, [sessions, activeTab]);
 
   const refresh = useCallback(
     async (silent = false) => {
@@ -242,29 +239,17 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     [gateway],
   );
 
-  /** 拉取归档会话（归档 tab 数据源） */
-  const fetchArchived = useCallback(async (silent = false) => {
-    try {
-      const list = await listSessionsRest({ limit: 200, order: "recent", archived: "only" });
-      setArchivedSessions(list);
-    } catch (err) {
-      if (!silent) setError(err instanceof Error ? err.message : String(err));
-    }
-  }, []);
-
   useEffect(() => {
     const off = gateway.onConnectionState((s) => setConnState(s));
     void refresh();
-    void fetchArchived(true);
     return off;
-  }, [gateway, refresh, fetchArchived]);
+  }, [gateway, refresh]);
 
   // 30s 轮询刷新（仅页面可见时；切回前台立即刷一次）
   useEffect(() => {
     const tick = () => {
       if (document.visibilityState === "visible") {
         void refresh(true);
-        void fetchArchived(true);
       }
     };
     const id = setInterval(tick, 30_000);
@@ -273,7 +258,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       clearInterval(id);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [refresh, fetchArchived]);
+  }, [refresh]);
 
   // 搜索：300ms debounce + 序号守卫（旧请求迟到不覆盖新结果）
   const searchSeqRef = useRef(0);
@@ -348,7 +333,6 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       await setSessionPinnedRest(s.id, !s.pinned);
       const patch = (prev: RestSession[]) => prev.map((x) => (x.id === s.id ? { ...x, pinned: !s.pinned } : x));
       setSessions((prev) => patch(prev));
-      setArchivedSessions((prev) => patch(prev));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
@@ -356,17 +340,12 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     }
   };
 
-  const toggleArchive = async (s: RestSession, archived: boolean) => {
+  const toggleArchive = async (s: RestSession) => {
     setError("");
     try {
-      await setSessionArchivedRest(s.id, archived);
-      if (archived) {
-        setSessions((prev) => prev.filter((x) => x.id !== s.id));
-        setArchivedSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [{ ...s, archived: true }, ...prev]));
-      } else {
-        setArchivedSessions((prev) => prev.filter((x) => x.id !== s.id));
-        setSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [{ ...s, archived: false }, ...prev]));
-      }
+      await setSessionArchivedRest(s.id, true);
+      // 归档后从列表移除（App 不提供归档查看/恢复入口）
+      setSessions((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -378,7 +357,6 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     try {
       await deleteSessionRest(s.id);
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
-      setArchivedSessions((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -394,7 +372,6 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       await renameSessionRest(s.id, title);
       const patch = (prev: RestSession[]) => prev.map((x) => (x.id === s.id ? { ...x, title } : x));
       setSessions((prev) => patch(prev));
-      setArchivedSessions((prev) => patch(prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -416,25 +393,17 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     setSelected(new Set());
   };
 
-  const bulkArchive = async (archived: boolean) => {
+  const bulkArchive = async () => {
     const ids = [...selected];
     if (ids.length === 0) return;
     setError("");
-    const { done, failedIds } = await bulkArchiveSessionsRest(ids, archived);
+    const { done, failedIds } = await bulkArchiveSessionsRest(ids, true);
     if (failedIds.length > 0) {
       setError(`部分归档失败（${done}/${ids.length}）`);
     }
     // 只对成功项更新 UI（失败项保留在列表中，避免"幽灵消失"后被轮询拉回）
     const succeeded = new Set(ids.filter((id) => !failedIds.includes(id)));
-    if (archived) {
-      const moved = sessions.filter((x) => succeeded.has(x.id)).map((x) => ({ ...x, archived: true }));
-      setSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
-      setArchivedSessions((prev) => [...prev.filter((x) => !succeeded.has(x.id)), ...moved]);
-    } else {
-      const moved = archivedSessions.filter((x) => succeeded.has(x.id)).map((x) => ({ ...x, archived: false }));
-      setArchivedSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
-      setSessions((prev) => [...prev.filter((x) => !succeeded.has(x.id)), ...moved]);
-    }
+    setSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
     exitMultiMode();
   };
 
@@ -451,7 +420,6 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         setError(`部分会话已被其他端删除（实际删除 ${deleted} 个）`);
       }
       setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
-      setArchivedSessions((prev) => prev.filter((x) => !selected.has(x.id)));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -517,8 +485,8 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         )}
       </header>
 
-      {/* 搜索框（归档 tab 与多选模式隐藏） */}
-      {!multiMode && activeTab !== "archived" && (
+      {/* 搜索框（多选模式隐藏） */}
+      {!multiMode && (
         <div className="search-bar">
           <input
             className="search-input"
@@ -545,7 +513,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
               onClick={() => switchTab(t.key)}
             >
               {t.label}
-              {t.key !== "archived" && <span className="tab-count">{counts[t.key]}</span>}
+              <span className="tab-count">{counts[t.key]}</span>
             </button>
           ))}
         </nav>
@@ -574,7 +542,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         <div className="center-screen"><div className="spinner" /></div>
       ) : activeItems !== null && activeItems.length === 0 ? (
         <div className="empty">
-          <p>{activeTab === "archived" ? "暂无归档会话" : "该分类暂无会话"}</p>
+          <p>该分类暂无会话</p>
         </div>
       ) : activeItems !== null ? (
         <ul className="session-list">{activeItems.map(renderItem)}</ul>
@@ -601,9 +569,9 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           <button
             className="btn"
             disabled={selected.size === 0 || bulkDeleting}
-            onClick={() => void bulkArchive(activeTab === "archived" ? false : true)}
+            onClick={() => void bulkArchive()}
           >
-            {activeTab === "archived" ? "恢复" : "归档"}
+            归档
           </button>
           <button
             className="btn btn-danger"
@@ -655,10 +623,10 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
               onClick={() => {
                 const target = menuFor;
                 setMenuFor(null);
-                void toggleArchive(target, !target.archived);
+                void toggleArchive(target);
               }}
             >
-              {menuFor.archived ? "↩ 取消归档" : "🗄 归档"}
+              🗄 归档
             </button>
             <button
               className="sheet-item"
