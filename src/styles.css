@@ -1227,10 +1227,6 @@ button {
   flex: 1;
   min-width: 0;
 }
-.composer .model-btn {
-  flex-shrink: 0;
-  max-width: 120px;
-}
 
 /* 附加按钮 */
 .attach-btn {

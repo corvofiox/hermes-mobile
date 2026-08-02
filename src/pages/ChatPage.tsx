@@ -96,6 +96,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     listeningRef.current = v;
     setListening(v);
   };
+  /** 组件挂载状态（语音 start 多 await 期间返回列表时中断流程，防麦克风悬挂） */
+  const mountedRef = useRef(true);
+  /** stopVoice 后忽略迟到的 started 事件 */
+  const voiceStoppedRef = useRef(false);
   /** 全屏图片预览（dataUrl 或 http URL） */
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const voiceOffRef = useRef<(() => void) | null>(null);
@@ -328,7 +332,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
   // 卸载时清理语音监听器 + 停止麦克风（防止返回列表后仍在录音）
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       voiceOffRef.current?.();
       voiceOffRef.current = null;
       import("@capacitor-community/speech-recognition")
@@ -462,14 +468,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     voiceStartLockRef.current = true;
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
+      if (!mountedRef.current) return; // 已返回列表，中断流程
       const available = await SpeechRecognition.available();
+      if (!mountedRef.current) return;
       if (!available.available) {
         setStatus("当前设备不支持语音识别");
         return;
       }
       const perm = await SpeechRecognition.checkPermissions();
+      if (!mountedRef.current) return;
       if (perm.speechRecognition !== "granted") {
         const req = await SpeechRecognition.requestPermissions();
+        if (!mountedRef.current) return;
         if (req.speechRecognition !== "granted") {
           setStatus("需要麦克风权限才能使用语音输入");
           return;
@@ -483,15 +493,24 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         if (m) setInput(m);
       });
       const offState = await SpeechRecognition.addListener("listeningState", (data: { status: string }) => {
+        if (voiceStoppedRef.current && data.status === "started") return; // 停止后迟到的 started 事件忽略
         setListeningBoth(data.status === "started");
       });
+      if (!mountedRef.current) {
+        // await 监听注册期间组件已卸载：立即清理，不启动识别
+        void offPartial.remove();
+        void offState.remove();
+        return;
+      }
       voiceOffRef.current = () => {
         void offPartial.remove();
         void offState.remove();
       };
+      voiceStoppedRef.current = false;
       setListeningBoth(true);
       await SpeechRecognition.start({ language: "zh-CN", partialResults: true, popup: false });
     } catch (err) {
+      if (!mountedRef.current) return; // 已卸载，不更新状态
       setListeningBoth(false);
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`语音识别启动失败：${msg}`);
@@ -503,11 +522,15 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const stopVoice = async () => {
     // 显式复位状态（listeningState 事件在部分设备上不可靠，不能依赖事件关闭）
     setListeningBoth(false);
+    voiceStoppedRef.current = true;
+    voiceStartLockRef.current = true; // 停止进行中禁止立即重开（防 stop/start 竞态）
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
       await SpeechRecognition.stop();
     } catch {
       // 忽略停止失败（插件已卸载/非原生环境）
+    } finally {
+      voiceStartLockRef.current = false;
     }
     voiceOffRef.current?.();
     voiceOffRef.current = null;
@@ -556,7 +579,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             <p>正在加载对话…</p>
           </div>
         )}
-        {!historyLoading && messages.length === 0 && (
+        {!historyLoading && messages.length === 0 && !historyFailed && (
           <div className="empty">
             <p>开始和 Hermes 对话吧</p>
           </div>
