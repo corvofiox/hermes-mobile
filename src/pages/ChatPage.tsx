@@ -284,8 +284,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           const raw = String(m.text ?? m.content ?? "");
           // 历史消息中的 @file: 引用还原为文件卡片。
           // 服务端对含空格/特殊字符路径的引用加引号（_format_ref_value：`"..."` 或 `'...'`），
-          // 正则需引号感知。
-          const fileRefs = raw.match(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g) ?? [];
+          // 正则需引号感知；同一引用会在用户 prompt 与服务端 "Attached Context" 段重复出现，去重。
+          const fileRefs = [...new Set(raw.match(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g) ?? [])];
           const files = fileRefs.map((ref) => {
             const path = ref.replace(/^@file:/, "").replace(/^["'`]|["'`]$/g, "");
             const name = path.split("/").pop() ?? path;
