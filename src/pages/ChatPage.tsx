@@ -280,11 +280,23 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
         .filter((m) => m.role === "user" || m.role === "assistant")
-        .map((m) => ({
-          id: nextId(),
-          role: m.role as "user" | "assistant",
-          text: String(m.text ?? m.content ?? ""),
-        }));
+        .map((m) => {
+          const raw = String(m.text ?? m.content ?? "");
+          // 历史消息中的 @file: 引用还原为文件卡片（服务端文本为 "@file:path" 或带说明）
+          const fileRefs = raw.match(/@file:[^\s\n"']+/g) ?? [];
+          const files = fileRefs.map((ref) => {
+            const path = ref.replace(/^@file:/, "");
+            const name = path.split("/").pop() ?? path;
+            return { name, size: 0 };
+          });
+          const text = fileRefs.length > 0 ? raw.replace(/@file:[^\s\n"']+/g, "").trim() : raw;
+          return {
+            id: nextId(),
+            role: m.role as "user" | "assistant",
+            text,
+            ...(files.length > 0 ? { files } : {}),
+          };
+        });
       // 断线重连恢复：会话仍在运行则进入 busy，并用 inflight 快照初始化末条消息；
       // 否则必须复位 busy/tool/status（旧 complete 帧可能丢在断掉的 transport 上，永远等不到）
       if (resumed.running) {
@@ -405,10 +417,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
     // 文件：@file: 引用拼入 prompt（agent 文件工具可读）
     const imageText = hasImages && !text ? pendingImages[0]?.text || "" : "";
-    const fileText = hasFiles
-      ? `${text ? "\n" : ""}${pendingFiles.map((f) => f.refText).join("\n")}`
-      : "";
-    const promptText = `${text}${imageText}${fileText}`.trim();
+    const fileText = pendingFiles.map((f) => f.refText);
+    const promptText = [text, imageText, ...fileText].filter(Boolean).join("\n");
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
     const fileInfos = pendingFiles.map((f) => ({ name: f.name, size: f.size }));
     setInput("");
@@ -422,7 +432,27 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
-      // 发送失败：把刚 push 的用户消息标记 error
+      // 发送失败：恢复待发送附件（服务端已 attach 的文件/图片，重发用同一引用不会重复写入），
+      // 消息标记 error 供用户一键重发
+      setPendingImages((prev) => [
+        ...prev,
+        ...imageDataUrls.map((dataUrl, i) => ({
+          id: nextId(),
+          dataUrl,
+          text: pendingImages[i]?.text ?? "",
+        })),
+      ]);
+      setPendingFiles((prev) => [
+        ...prev,
+        ...fileInfos.map((fi, i) => ({
+          id: nextId(),
+          name: fi.name,
+          size: fi.size,
+          refText: pendingFiles[i]?.refText ?? "",
+          uploading: false,
+          progress: 100,
+        })),
+      ]);
       setMessages((prev) => prev.map((m) => (m.id === newId ? { ...m, error: true } : m)));
     } finally {
       sendLockRef.current = false;
@@ -510,6 +540,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
     if (file.size > MAX_FILE_BYTES) {
       setStatus(`文件过大（上限 256MB）：${file.name}`);
+      return;
+    }
+    if (file.size === 0) {
+      setStatus(`空文件无法发送：${file.name}`);
       return;
     }
     const fileId = nextId();
@@ -867,7 +901,11 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                 </div>
               ),
             )}
-            <button className="btn btn-sm pending-add" onClick={() => fileInputRef.current?.click()}>
+            <button
+              className="btn btn-sm pending-add"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!liveReady || resumingRef.current}
+            >
               ＋
             </button>
           </div>
@@ -935,14 +973,20 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       {showImageSheet && (
         <div className="sheet-overlay" onClick={() => setShowImageSheet(false)}>
           <div className="action-sheet" onClick={(e) => e.stopPropagation()}>
-            <div className="sheet-title">发送图片</div>
+            <div className="sheet-title">添加附件</div>
             <button className="sheet-item" onClick={() => void pickImage("camera")}>
               📷 拍照
             </button>
             <button className="sheet-item" onClick={() => void pickImage("photos")}>
               🖼 从相册选择
             </button>
-            <button className="sheet-item" onClick={() => fileInputRef.current?.click()}>
+            <button
+              className="sheet-item"
+              onClick={() => {
+                setShowImageSheet(false); // 先关 sheet 再打开系统文件选择器
+                fileInputRef.current?.click();
+              }}
+            >
               📄 发送文件
             </button>
             <button className="sheet-item cancel" onClick={() => setShowImageSheet(false)}>
