@@ -81,7 +81,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [historyFailed, setHistoryFailed] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
   /** 历史消息加载中（旧会话 resume 期间显示加载效果，不显示 empty 文案） */
-  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(() => !sessionLiveId);
+  /** live id 就绪（ref 写入不触发 re-render，需 state 驱动按钮解禁；新会话初始即就绪） */
+  const [liveReady, setLiveReady] = useState<boolean>(() => !!sessionLiveId);
   /** 模型偏好（新会话生效）；当前会话的模型由 resume 时服务端决定 */
   const [modelPref, setModelPrefState] = useState<ModelPref>(() => getModelPref());
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -250,6 +252,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       const resumed = await gateway.resumeSession(sessionId);
       liveSessionIdRef.current = resumed.session_id;
       resumeSucceededRef.current = true;
+      setLiveReady(true); // resume 完成解禁按钮（触发 re-render）
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
         .filter((m) => m.role === "user" || m.role === "assistant")
@@ -278,6 +281,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       // 并清空失效的 live id（发送按钮自动禁用，避免发送才报 4001）
       if (resumeSucceededRef.current && /not found|4007/i.test(msg)) {
         liveSessionIdRef.current = null;
+        setLiveReady(false);
         setBusy(false);
         setTool(null);
         setStatus("会话已过期（未发送过消息的新会话重连后需重新创建）");
@@ -300,6 +304,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       // 新建会话：live id 已由 create 提供，直接使用（create 不持久化 DB 行，resume 会 404）
       liveSessionIdRef.current = sessionLiveId;
       resumeSucceededRef.current = true;
+      setLiveReady(true); // 触发 re-render 解禁按钮（ref 写入本身不触发渲染）
       return;
     }
     void doResume();
@@ -567,7 +572,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           </button>
           <span className={`conn-dot ${connDotCls}`} title={connDotTitle} />
         </div>
-        <button className="btn" onClick={stop} disabled={!busy || !liveSessionIdRef.current}>
+        <button className="btn" onClick={stop} disabled={!busy || !liveReady}>
           停止
         </button>
       </header>
@@ -701,7 +706,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             className="attach-btn"
             title="发送图片"
             onClick={() => setShowImageSheet(true)}
-            disabled={!liveSessionIdRef.current || resumingRef.current}
+            disabled={!liveReady || resumingRef.current}
           >
             ＋
           </button>
@@ -724,7 +729,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             className={`voice-btn${listening ? " listening" : ""}`}
             title={listening ? "结束语音输入" : "语音输入"}
             onClick={() => void toggleVoice()}
-            disabled={busy || !liveSessionIdRef.current || resumingRef.current}
+            disabled={busy || !liveReady || resumingRef.current}
           >
             {listening ? "■" : "🎤"}
           </button>
@@ -734,7 +739,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             disabled={
               busy ||
               (!input.trim() && pendingImages.length === 0) ||
-              !liveSessionIdRef.current ||
+              !liveReady ||
               resumingRef.current
             }
           >
