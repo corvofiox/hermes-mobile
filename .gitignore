@@ -7,3 +7,5 @@ android/local.properties
 *.apk
 .DS_Store
 *.log
+tsconfig.tsbuildinfo
+.cache/

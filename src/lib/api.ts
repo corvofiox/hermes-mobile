@@ -26,6 +26,19 @@ export interface LoginResult {
   next?: string;
 }
 
+/**
+ * 统一 fetch 封装：带 credentials，遇 401（会话过期）广播
+ * `hermes:unauthorized` 事件，App 监听后切回登录页并关闭 gateway。
+ * 登录接口本身不用它（401 = 密码错误，不是会话过期）。
+ */
+async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(path, { ...init, credentials: "include" });
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
+  }
+  return res;
+}
+
 /** 用户名/密码登录（basic provider），成功后 cookie 由浏览器自动管理 */
 export async function passwordLogin(username: string, password: string): Promise<LoginResult> {
   const res = await fetch("/auth/password-login", {
@@ -49,9 +62,8 @@ export interface WsTicket {
 
 /** 获取一次性 WebSocket ticket（需已登录）。注意：官方前端用 POST */
 export async function getWsTicket(): Promise<WsTicket> {
-  const res = await fetch("/api/auth/ws-ticket", {
+  const res = await apiFetch("/api/auth/ws-ticket", {
     method: "POST",
-    credentials: "include",
   });
   if (!res.ok) {
     throw new ApiError(`获取 WS ticket 失败 (HTTP ${res.status})`, res.status);
@@ -65,13 +77,65 @@ export function buildWsUrl(ticket: string): string {
   return `${proto}://${location.host}/api/ws?ticket=${encodeURIComponent(ticket)}`;
 }
 
-/** 探测后端是否可达 / 需要登录 */
-export async function apiStatus(): Promise<{
-  version: string;
-  auth_required?: boolean;
-  auth_providers?: string[];
-}> {
-  const res = await fetch("/api/status", { credentials: "include" });
-  if (!res.ok) throw new ApiError(`后端不可达 (HTTP ${res.status})`, res.status);
-  return await res.json();
+// ---- 会话 REST API（比 tui_gateway session.list 多了 pinned/source 支持）----
+
+export interface RestSession {
+  id: string;
+  source?: string;
+  title?: string;
+  preview?: string;
+  started_at?: number;
+  last_active?: number;
+  message_count?: number;
+  archived?: boolean;
+  pinned?: boolean;
+  [k: string]: unknown;
+}
+
+/** 拉取会话列表（REST，含 pinned 标记；source 可过滤） */
+export async function listSessionsRest(params: {
+  limit?: number;
+  order?: "created" | "recent";
+  source?: string;
+  sources?: string;
+  exclude_sources?: string;
+} = {}): Promise<RestSession[]> {
+  const qs = new URLSearchParams();
+  qs.set("limit", String(params.limit ?? 200));
+  qs.set("order", params.order ?? "recent");
+  if (params.source) qs.set("source", params.source);
+  if (params.sources) qs.set("sources", params.sources);
+  if (params.exclude_sources) qs.set("exclude_sources", params.exclude_sources);
+  const res = await apiFetch(`/api/sessions?${qs.toString()}`);
+  if (!res.ok) throw new ApiError(`获取会话列表失败 (HTTP ${res.status})`, res.status);
+  const data = (await res.json()) as { sessions?: RestSession[] };
+  return data.sessions ?? [];
+}
+
+/** 置顶 / 取消置顶会话 */
+export async function setSessionPinnedRest(sessionId: string, pinned: boolean): Promise<void> {
+  const res = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned }),
+  });
+  if (!res.ok) throw new ApiError(`置顶操作失败 (HTTP ${res.status})`, res.status);
+}
+
+/** 重命名会话 */
+export async function renameSessionRest(sessionId: string, title: string): Promise<void> {
+  const res = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!res.ok) throw new ApiError(`重命名失败 (HTTP ${res.status})`, res.status);
+}
+
+/** 删除会话 */
+export async function deleteSessionRest(sessionId: string): Promise<void> {
+  const res = await apiFetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) throw new ApiError(`删除失败 (HTTP ${res.status})`, res.status);
 }

@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Mobile · 10 种风格设计板</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&family=DM+Sans:wght@400;500;700&family=Noto+Serif+SC:wght@500;700&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* ============ 设计板布局 ============ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body.board { background:#0b0d12; color:#e8eaef; font-family:'DM Sans',system-ui,sans-serif; padding: 32px 24px 80px; }
+.board-head { max-width: 1200px; margin: 0 auto 8px; }
+.board-head h1 { font-size: 22px; letter-spacing: .5px; }
+.board-head p { color:#8b93a3; font-size: 13px; margin-top: 6px; }
+.grid { max-width: 1200px; margin: 24px auto 0; display:grid; grid-template-columns: repeat(auto-fill,minmax(430px,1fr)); gap: 28px; }
+.style-card { background:#131722; border:1px solid #232936; border-radius: 16px; padding: 16px 16px 20px; }
+.style-card h2 { font-size: 15px; margin-bottom: 12px; display:flex; align-items:baseline; gap:10px; }
+.style-card h2 .no { color:#5b6472; font-size:12px; font-weight:500; }
+.style-card h2 .tag { margin-left:auto; font-size:11px; color:#8b93a3; font-weight:400; }
+.phones { display:flex; gap: 14px; justify-content:center; }
+.phone { width: 195px; height: 408px; border-radius: 22px; overflow:hidden; border:1px solid rgba(255,255,255,.09); box-shadow: 0 12px 32px rgba(0,0,0,.45); position:relative; flex-shrink:0; background:#000; }
+
+/* ============ 通用手机骨架（静态示意） ============ */
+.ph { width:100%; height:100%; display:flex; flex-direction:column; font-size: 11px; position:relative; overflow:hidden; }
+.ph .sb { height: 22px; display:flex; align-items:center; justify-content:space-between; padding: 0 12px; font-size: 9px; font-weight:600; flex-shrink:0; }
+.ph .h { display:flex; align-items:center; gap:6px; padding: 8px 10px; flex-shrink:0; }
+.ph .h .t { flex:1; display:flex; align-items:center; gap:5px; min-width:0; }
+.ph .h .t b { font-size: 11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width: 110px; font-weight:700; }
+.ph .h .dot { width:6px; height:6px; border-radius:50%; background:#3ddc84; flex-shrink:0; }
+.ph .h .btn { padding: 3px 8px; border-radius: 8px; font-size: 9px; font-weight:600; flex-shrink:0; }
+.ph .tabs { display:flex; gap:4px; padding: 4px 10px 8px; overflow:hidden; flex-shrink:0; }
+.ph .tabs span { padding: 3px 7px; border-radius: 99px; font-size: 9px; white-space:nowrap; }
+.ph .tabs span.on { font-weight:700; }
+.ph .list { flex:1; overflow:hidden; }
+.ph .it { display:flex; gap:7px; padding: 8px 10px; align-items:center; }
+.ph .it .m { flex:1; min-width:0; }
+.ph .it .m b { display:block; font-size: 10.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ph .it .m i { display:block; font-style:normal; font-size: 8.5px; opacity:.55; margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ph .it .time { font-size:8px; opacity:.5; flex-shrink:0; }
+.ph .it .ops { display:flex; gap:3px; margin-top:2px; flex-shrink:0; }
+.ph .it .ops u { text-decoration:none; font-size:9px; opacity:.6; padding:1px 3px; }
+.ph .bg { padding:2px 4px; border-radius:5px; font-size:8px; font-weight:700; margin-left:5px; }
+.ph .chat { flex:1; display:flex; flex-direction:column; gap:7px; padding: 8px 9px; overflow:hidden; }
+.ph .msg { max-width:82%; padding:6px 9px; font-size:9.5px; line-height:1.45; }
+.ph .msg.u { align-self:flex-end; border-radius:10px 10px 3px 10px; }
+.ph .msg.a { align-self:flex-start; border-radius:10px 10px 10px 3px; }
+.ph .msg.a b { font-weight:700; }
+.ph .msg.a code { font-family:'JetBrains Mono',monospace; font-size:8.5px; padding:1px 3px; border-radius:3px; }
+.ph .msg.a .tbl { margin-top:4px; border-collapse:collapse; font-size:8px; width:100%; }
+.ph .msg.a .tbl td, .ph .msg.a .tbl th { border:1px solid; padding:2px 4px; text-align:left; }
+.ph .in { display:flex; gap:6px; padding: 7px 9px; flex-shrink:0; align-items:center; }
+.ph .in .f { flex:1; padding: 6px 9px; border-radius: 10px; font-size: 9.5px; }
+.ph .in .s { padding: 6px 10px; border-radius: 10px; font-size: 9.5px; font-weight:700; flex-shrink:0; }
+.ph .foot { padding: 8px; text-align:center; font-size:9px; opacity:.6; flex-shrink:0; }
+
+/* ================================================================
+   1 · 深空黑金  — 精密暗色 · 紫罗兰 accent · 锐利圆角 (Linear 系)
+================================================================ */
+.t1 { --bg:#08090c; --bg2:#0e1015; --line:#1c2029; --ink:#e9ebf0; --dim:#7a8292; --acc:#8b7cff; --acc2:#5b4fd6; --blob:#171a24; }
+.t1 { font-family:'Space Grotesk','DM Sans',sans-serif; background:var(--bg); color:var(--ink); }
+.t1 .sb { color:var(--dim); }
+.t1 .h { background:var(--bg); border-bottom:1px solid var(--line); }
+.t1 .h .btn { background:var(--acc); color:#fff; border:none; }
+.t1 .tabs { gap:3px; }
+.t1 .tabs span { color:var(--dim); }
+.t1 .tabs span.on { background:var(--acc); color:#fff; }
+.t1 .it { border-bottom:1px solid rgba(28,32,41,.6); }
+.t1 .it .m b { color:var(--ink); }
+.t1 .bg { background:rgba(139,124,255,.16); color:var(--acc); }
+.t1 .msg.a { background:var(--blob); border:1px solid var(--line); color:var(--ink); }
+.t1 .msg.u { background:var(--acc2); color:#fff; }
+.t1 .msg.a code { background:rgba(255,255,255,.08); }
+.t1 .in { border-top:1px solid var(--line); }
+.t1 .in .f { background:var(--bg2); border:1px solid var(--line); color:var(--ink); }
+.t1 .in .s { background:var(--acc); color:#fff; border:none; }
+
+/* ================================================================
+   2 · 极简白  — 纯白 · 黑字 · 零装饰 · Geist 系 (Vercel 系)
+================================================================ */
+.t2 { --bg:#fafafa; --bg2:#f2f2f2; --line:#e5e5e5; --ink:#171717; --dim:#9c9c9c; --acc:#000; --blob:#f5f5f5; }
+.t2 { font-family:'DM Sans',system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+.t2 .sb { color:var(--dim); }
+.t2 .h { border-bottom:1px solid var(--line); }
+.t2 .h .btn { background:var(--acc); color:#fff; border:none; border-radius:6px; }
+.t2 .tabs { gap:2px; border-bottom:1px solid var(--line); padding-bottom:0; }
+.t2 .tabs span { border-radius:0; color:var(--dim); padding:4px 8px; border-bottom:2px solid transparent; }
+.t2 .tabs span.on { color:var(--ink); border-bottom-color:var(--acc); font-weight:700; }
+.t2 .it { border-bottom:1px solid var(--line); border-radius:0; }
+.t2 .bg { background:#e8e8e8; color:#444; border-radius:3px; }
+.t2 .msg.a { background:var(--blob); border-radius:2px; }
+.t2 .msg.u { background:var(--ink); color:#fff; border-radius:2px; }
+.t2 .msg.a code { background:#e8e8e8; color:#333; }
+.t2 .in { border-top:1px solid var(--line); }
+.t2 .in .f { background:#fff; border:1px solid var(--line); border-radius:4px; }
+.t2 .in .s { background:var(--acc); color:#fff; border:none; border-radius:4px; }
+.t2 .foot { border-top:1px solid var(--line); }
+
+/* ================================================================
+   3 · 终端磷光  — 纯黑 · 荧光绿 mono · CRT 感 (Ollama/VoltAgent 系)
+================================================================ */
+.t3 { --bg:#050805; --bg2:#0a0f0a; --line:#12351a; --ink:#b8f5c2; --dim:#4f8f5c; --acc:#00ff66; --blob:#0c130d; }
+.t3 { font-family:'JetBrains Mono','IBM Plex Mono',monospace; background:var(--bg); color:var(--ink); }
+.t3 .sb { color:var(--dim); }
+.t3 .h { border-bottom:1px solid var(--line); }
+.t3 .h .btn { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+.t3 .tabs span { color:var(--dim); border:1px solid transparent; }
+.t3 .tabs span.on { color:var(--acc); border-color:var(--acc); background:rgba(0,255,102,.06); }
+.t3 .it { border-bottom:1px dashed var(--line); }
+.t3 .it .m b { color:var(--ink); }
+.t3 .it .m b::before { content:'> '; color:var(--acc); }
+.t3 .bg { background:transparent; color:var(--acc); border:1px solid var(--acc); border-radius:0; }
+.t3 .msg.a { background:var(--blob); border:1px solid var(--line); border-radius:0; }
+.t3 .msg.u { background:transparent; border:1px solid var(--acc); color:var(--acc); border-radius:0; }
+.t3 .msg.a code { background:rgba(0,255,102,.1); color:var(--acc); }
+.t3 .in { border-top:1px solid var(--line); }
+.t3 .in .f { background:var(--bg); border:1px solid var(--line); color:var(--ink); border-radius:0; }
+.t3 .in .s { background:var(--acc); color:#051005; border:none; border-radius:0; }
+
+/* ================================================================
+   4 · 霓虹赛博  — 深紫黑 · 电光渐变 · 辉光 (Minimax 系)
+================================================================ */
+.t4 { --bg:#0d0716; --bg2:#150a26; --line:#2a1a45; --ink:#f0eaff; --dim:#8d7bb3; --acc:#ff2ec4; --acc2:#7b2fff; --blob:#1c1030; }
+.t4 { font-family:'Space Grotesk','DM Sans',sans-serif; background:var(--bg); color:var(--ink); }
+.t4 .sb { color:var(--dim); }
+.t4 .h { background:linear-gradient(180deg, rgba(123,47,255,.12), transparent); border-bottom:1px solid var(--line); }
+.t4 .h .btn { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; border:none; box-shadow:0 0 12px rgba(255,46,196,.4); }
+.t4 .tabs span { color:var(--dim); border:1px solid transparent; }
+.t4 .tabs span.on { color:#fff; background:linear-gradient(135deg, rgba(255,46,196,.25), rgba(123,47,255,.25)); border-color:rgba(255,46,196,.5); box-shadow:0 0 10px rgba(255,46,196,.2); }
+.t4 .it { border-bottom:1px solid rgba(42,26,69,.7); }
+.t4 .it .m b { color:#fff; }
+.t4 .bg { background:linear-gradient(135deg, rgba(255,46,196,.2), rgba(123,47,255,.2)); color:#e9c8ff; }
+.t4 .msg.a { background:var(--blob); border:1px solid rgba(123,47,255,.35); }
+.t4 .msg.u { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; box-shadow:0 2px 12px rgba(255,46,196,.35); }
+.t4 .msg.a code { background:rgba(123,47,255,.2); color:#c9b4ff; }
+.t4 .in { border-top:1px solid var(--line); }
+.t4 .in .f { background:var(--bg2); border:1px solid var(--line); color:var(--ink); }
+.t4 .in .s { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; border:none; }
+
+/* ================================================================
+   5 · 暖纸笔记  — 米白 · serif 标题 · 柔和 (Notion 系)
+================================================================ */
+.t5 { --bg:#fbfaf7; --bg2:#f3f0e8; --line:#e8e3d8; --ink:#37352f; --dim:#9e9a91; --acc:#b76e2e; --blob:#f1eee6; }
+.t5 { font-family:'DM Sans',system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+.t5 .sb { color:var(--dim); }
+.t5 .h { border-bottom:1px solid var(--line); }
+.t5 .h .t b { font-family:'Noto Serif SC',serif; }
+.t5 .h .btn { background:var(--acc); color:#fff; border:none; }
+.t5 .tabs { gap:6px; }
+.t5 .tabs span { background:var(--bg2); color:var(--dim); }
+.t5 .tabs span.on { background:var(--ink); color:var(--bg); font-weight:700; }
+.t5 .it { border-bottom:1px solid var(--line); }
+.t5 .it .m b { font-family:'Noto Serif SC',serif; font-weight:600; }
+.t5 .bg { background:#e9e2d4; color:#8a6d3f; }
+.t5 .msg.a { background:var(--blob); border:1px solid var(--line); border-radius:6px; }
+.t5 .msg.u { background:var(--ink); color:var(--bg); border-radius:6px; }
+.t5 .msg.a code { background:#e5dfd1; color:#6b5d3e; }
+.t5 .in { border-top:1px solid var(--line); }
+.t5 .in .f { background:#fff; border:1px solid var(--line); border-radius:8px; }
+.t5 .in .s { background:var(--acc); color:#fff; border:none; }
+
+/* ================================================================
+   6 · 珊瑚活力  — 白底 · 珊瑚红 · 大圆角 (Airbnb/Intercom 系)
+================================================================ */
+.t6 { --bg:#ffffff; --bg2:#faf6f4; --line:#f0e7e2; --ink:#22262b; --dim:#9aa0a8; --acc:#ff5a5f; --blob:#f7f2ef; }
+.t6 { font-family:'DM Sans',system-ui,sans-serif; background:var(--bg); color:var(--ink); }
+.t6 .sb { color:var(--dim); }
+.t6 .h { border-bottom:1px solid var(--line); }
+.t6 .h .btn { background:var(--acc); color:#fff; border:none; border-radius:99px; }
+.t6 .tabs span { background:var(--bg2); color:var(--dim); border-radius:99px; }
+.t6 .tabs span.on { background:var(--acc); color:#fff; }
+.t6 .it { border-radius:14px; margin:0 8px; padding:9px 10px; background:var(--bg2); margin-bottom:5px; }
+.t6 .bg { background:rgba(255,90,95,.14); color:var(--acc); }
+.t6 .msg.a { background:var(--blob); border-radius:16px 16px 16px 4px; }
+.t6 .msg.u { background:var(--acc); color:#fff; border-radius:16px 16px 4px 16px; }
+.t6 .msg.a code { background:rgba(255,90,95,.12); color:#c23b40; }
+.t6 .in { border-top:none; }
+.t6 .in .f { background:var(--bg2); border:none; border-radius:99px; }
+.t6 .in .s { background:var(--acc); color:#fff; border:none; border-radius:99px; }
+
+/* ================================================================
+   7 · 玻璃浮层  — 深蓝底 · 毛玻璃卡片 · 光晕 (Glassmorphism)
+================================================================ */
+.t7 { --bg:#0f1a2e; --bg2:rgba(255,255,255,.07); --line:rgba(255,255,255,.12); --ink:#f2f6ff; --dim:#9fb0cc; --acc:#58c7f3; --blob:rgba(255,255,255,.08); }
+.t7 { font-family:'DM Sans',system-ui,sans-serif; background:radial-gradient(120% 90% at 20% 0%, #1b3a5e 0%, #0f1a2e 55%, #0a1120 100%); color:var(--ink); }
+.t7 .sb { color:var(--dim); }
+.t7 .h { background:rgba(255,255,255,.05); backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+.t7 .h .btn { background:var(--acc); color:#08233a; border:none; }
+.t7 .tabs span { background:rgba(255,255,255,.08); color:var(--dim); }
+.t7 .tabs span.on { background:var(--acc); color:#08233a; font-weight:700; }
+.t7 .it { background:rgba(255,255,255,.06); backdrop-filter:blur(8px); border:1px solid var(--line); border-radius:12px; margin:0 8px 6px; padding:8px 10px; }
+.t7 .bg { background:rgba(88,199,243,.2); color:var(--acc); }
+.t7 .msg.a { background:rgba(255,255,255,.09); backdrop-filter:blur(8px); border:1px solid var(--line); }
+.t7 .msg.u { background:rgba(88,199,243,.35); border:1px solid rgba(88,199,243,.4); }
+.t7 .msg.a code { background:rgba(255,255,255,.12); }
+.t7 .in { background:rgba(255,255,255,.06); border-top:1px solid var(--line); }
+.t7 .in .f { background:rgba(255,255,255,.1); border:1px solid var(--line); color:var(--ink); }
+.t7 .in .s { background:var(--acc); color:#08233a; border:none; }
+
+/* ================================================================
+   8 · 复古绿黑  — Spotify 系 · 深绿黑 · 粗体大字
+================================================================ */
+.t8 { --bg:#121212; --bg2:#181818; --line:#2a2a2a; --ink:#ffffff; --dim:#9e9e9e; --acc:#1ed760; --blob:#1e1e1e; }
+.t8 { font-family:'Space Grotesk','DM Sans',sans-serif; background:var(--bg); color:var(--ink); }
+.t8 .sb { color:var(--dim); }
+.t8 .h { background:linear-gradient(180deg,#1a1a1a,#121212); border-bottom:1px solid var(--line); }
+.t8 .h .t b { font-size:12.5px; }
+.t8 .h .btn { background:var(--acc); color:#05280f; border:none; border-radius:99px; font-weight:800; }
+.t8 .tabs span { color:var(--dim); font-weight:700; font-size:9px; }
+.t8 .tabs span.on { color:var(--acc); }
+.t8 .it { border-bottom:1px solid rgba(42,42,42,.6); }
+.t8 .it .m b { font-size:11.5px; }
+.t8 .it .m i { opacity:.7; }
+.t8 .bg { background:rgba(30,215,96,.15); color:var(--acc); border-radius:99px; }
+.t8 .msg.a { background:var(--blob); border-radius:4px 18px 18px 18px; }
+.t8 .msg.u { background:var(--acc); color:#05280f; font-weight:600; border-radius:18px 4px 18px 18px; }
+.t8 .msg.a code { background:rgba(30,215,96,.12); color:#3ce57a; }
+.t8 .in { border-top:1px solid var(--line); }
+.t8 .in .f { background:var(--bg2); border:1px solid var(--line); border-radius:99px; }
+.t8 .in .s { background:var(--acc); color:#05280f; border:none; border-radius:99px; font-weight:800; }
+
+/* ================================================================
+   9 · 海洋清新  — 亮色 · 青蓝渐变 · 大按钮 (Wise 系)
+================================================================ */
+.t9 { --bg:#eef7fb; --bg2:#ffffff; --line:#d9e9f1; --ink:#10313f; --dim:#6f93a3; --acc:#10b5c4; --acc2:#0e8fd8; --blob:#ffffff; }
+.t9 { font-family:'DM Sans',system-ui,sans-serif; background:linear-gradient(180deg,#dff3fa 0%, #eef7fb 40%); color:var(--ink); }
+.t9 .sb { color:var(--dim); }
+.t9 .h { background:rgba(255,255,255,.65); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+.t9 .h .btn { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; border:none; border-radius:99px; box-shadow:0 3px 10px rgba(14,143,216,.3); }
+.t9 .tabs span { background:#fff; color:var(--dim); box-shadow:0 1px 3px rgba(16,49,63,.08); }
+.t9 .tabs span.on { background:var(--ink); color:#fff; }
+.t9 .it { background:#fff; border:1px solid var(--line); border-radius:14px; margin:0 8px 7px; padding:9px 10px; box-shadow:0 2px 6px rgba(16,49,63,.06); }
+.t9 .bg { background:rgba(16,181,196,.12); color:#0a8a96; }
+.t9 .msg.a { background:#fff; border:1px solid var(--line); box-shadow:0 2px 8px rgba(16,49,63,.07); }
+.t9 .msg.u { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; }
+.t9 .msg.a code { background:rgba(16,181,196,.1); color:#0a8a96; }
+.t9 .in { background:rgba(255,255,255,.7); border-top:1px solid var(--line); }
+.t9 .in .f { background:#fff; border:1px solid var(--line); border-radius:99px; }
+.t9 .in .s { background:linear-gradient(135deg, var(--acc), var(--acc2)); color:#fff; border:none; border-radius:99px; }
+
+/* ================================================================
+   10 · 星舰黑  — 纯黑白 · 高对比 · 未来感 (SpaceX 系)
+================================================================ */
+.t10 { --bg:#000000; --bg2:#0d0d0d; --line:#262626; --ink:#ffffff; --dim:#737373; --acc:#ffffff; --blob:#111111; }
+.t10 { font-family:'Space Grotesk','DM Sans',sans-serif; background:var(--bg); color:var(--ink); letter-spacing:.2px; }
+.t10 .sb { color:var(--dim); }
+.t10 .h { border-bottom:1px solid var(--line); }
+.t10 .h .t b { font-weight:700; letter-spacing:1px; }
+.t10 .h .btn { background:#fff; color:#000; border:none; border-radius:2px; text-transform:uppercase; letter-spacing:.5px; font-size:8px; }
+.t10 .tabs { border-bottom:1px solid var(--line); padding-bottom:0; }
+.t10 .tabs span { color:var(--dim); border-radius:2px; text-transform:uppercase; letter-spacing:.5px; font-size:8px; }
+.t10 .tabs span.on { background:#fff; color:#000; font-weight:700; }
+.t10 .it { border-bottom:1px solid #1a1a1a; padding:10px; }
+.t10 .it .m b { font-size:10px; letter-spacing:.5px; }
+.t10 .it .m i { text-transform:none; }
+.t10 .bg { background:#fff; color:#000; border-radius:1px; }
+.t10 .msg.a { background:var(--blob); border:1px solid var(--line); border-radius:0; }
+.t10 .msg.u { background:#fff; color:#000; border-radius:0; }
+.t10 .msg.a code { background:#1f1f1f; color:#ccc; }
+.t10 .in { border-top:1px solid var(--line); }
+.t10 .in .f { background:#0d0d0d; border:1px solid var(--line); color:#fff; border-radius:0; }
+.t10 .in .s { background:#fff; color:#000; border:none; border-radius:0; }
+</style>
+</head>
+<body class="board">
+<header class="board-head">
+  <h1>Hermes Mobile · 10 种风格</h1>
+  <p>每格 = 会话列表 + 聊天两屏 · 告诉我编号，我把 App 前端改成对应风格</p>
+</header>
+<main class="grid">
+
+<!-- 1 深空黑金 -->
+<section class="style-card"><h2><span class="no">01</span>深空黑金<span class="tag">Linear 系 · 精密暗色</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t1"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过，容器状态正常…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布 · 🏆 里程碑…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429，需切主模型…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t1"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 2 极简白 -->
+<section class="style-card"><h2><span class="no">02</span>极简白<span class="tag">Vercel 系 · 黑白克制</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t2"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t2"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 3 终端磷光 -->
+<section class="style-card"><h2><span class="no">03</span>终端磷光<span class="tag">Ollama 系 · CRT mono</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t3"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t3"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 4 霓虹赛博 -->
+<section class="style-card"><h2><span class="no">04</span>霓虹赛博<span class="tag">Minimax 系 · 电光渐变</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t4"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t4"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 5 暖纸笔记 -->
+<section class="style-card"><h2><span class="no">05</span>暖纸笔记<span class="tag">Notion 系 · 柔和衬线</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t5"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t5"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 6 珊瑚活力 -->
+<section class="style-card"><h2><span class="no">06</span>珊瑚活力<span class="tag">Airbnb 系 · 圆润明亮</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t6"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t6"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 7 玻璃浮层 -->
+<section class="style-card"><h2><span class="no">07</span>玻璃浮层<span class="tag">Glassmorphism · 通透光晕</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t7"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t7"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 8 复古绿黑 -->
+<section class="style-card"><h2><span class="no">08</span>复古绿黑<span class="tag">Spotify 系 · 粗体大字</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t8"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t8"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 9 海洋清新 -->
+<section class="style-card"><h2><span class="no">09</span>海洋清新<span class="tag">Wise 系 · 亮色渐变</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t9"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t9"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+<!-- 10 星舰黑 -->
+<section class="style-card"><h2><span class="no">10</span>星舰黑<span class="tag">SpaceX 系 · 纯黑白未来感</span></h2>
+<div class="phones">
+<div class="phone"><div class="ph t10"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><div class="t"><b>会话</b><span class="dot"></span></div><span class="btn">＋ 新对话</span></div>
+<div class="tabs"><span class="on">全部 145</span><span>置顶 8</span><span>其他 27</span><span>定时 113</span><span>平台 5</span></div>
+<div class="list">
+<div class="it"><div class="m"><b>K-POP 入库 #4<span class="bg">本地</span></b><i>aespa 完整收录 8K 多版本整理完成…</i></div><div class="time">14:02</div></div>
+<div class="it"><div class="m"><b>管理 Docker 服务 #10<span class="bg">本地</span></b><i>compose 更新流程验证通过…</i></div><div class="time">11:47</div></div>
+<div class="it"><div class="m"><b>游戏资讯 RSS 简报<span class="bg">定时</span></b><i>🔥 热门趋势 · ⭐ 重点发布…</i></div><div class="time">08:00</div></div>
+<div class="it"><div class="m"><b>DeepSeek V4 讨论<span class="bg">TG</span></b><i>Flash 免费层限流 429…</i></div><div class="time">昨天</div></div>
+</div></div>
+<div class="ph t10"><div class="sb"><span>9:41</span><span>◉</span></div>
+<div class="h"><span class="btn">‹ 返回</span><div class="t"><b>K-POP 入库 #4</b><span class="dot"></span></div><span class="btn">停止</span></div>
+<div class="chat">
+<div class="msg a"><b>已完成整理</b>，共 <code>787</code> 个文件入库，含官方与非官方衍生版本，画质不作过滤。</div>
+<div class="msg u">再跑一遍 8K 校验</div>
+<div class="msg a">正在执行 <code>ffprobe</code> 校验…<br><span class="tbl"><table class="tbl"><tr><th>版本</th><th>分辨率</th><th>状态</th></tr><tr><td>8K Next Level</td><td>7680×4320</td><td>✓</td></tr><tr><td>4K FANCAM</td><td>3840×2160</td><td>✓</td></tr></table></span></div>
+</div>
+<div class="in"><div class="f">输入消息…</div><div class="s">发送</div></div>
+</div>
+</div></section>
+
+</main>
+</body>
+</html>
