@@ -24,12 +24,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Install fixed debug signing key (覆盖升级一致性)
-        run: |
-          mkdir -p "$HOME/.android"
-          cp .keystore/debug.keystore "$HOME/.android/debug.keystore"
-          chmod 600 "$HOME/.android/debug.keystore"
-
       - name: npm ci
         run: npm ci --no-audit --no-fund
 
