@@ -47,8 +47,11 @@ interface PendingFile {
   refText: string;
 }
 
-/** 文件上传大小上限（base64 放大 33% + WS 传输/WebView 内存约束） */
-const MAX_FILE_BYTES = 20 * 1024 * 1024;
+/**
+ * 文件上传大小上限：对齐服务端设计上限（256 MiB 原始文件，WS 帧 384 MiB 承载）。
+ * 不设更小的客户端限制——服务端能收多少就允许发多少。
+ */
+const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
 /** streaming 期间代码围栏可能未闭合（奇数个 ```），渲染前补齐闭合标记 */
 function closeUnclosedFence(text: string): string {
@@ -502,7 +505,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       return;
     }
     if (file.size > MAX_FILE_BYTES) {
-      setStatus(`文件过大（上限 20MB）：${file.name}`);
+      setStatus(`文件过大（上限 256MB）：${file.name}`);
       return;
     }
     try {
