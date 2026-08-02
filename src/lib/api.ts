@@ -13,7 +13,7 @@
  *   - WS  /api/ws?ticket=<ticket> 升级鉴权（gated 模式拒绝旧 ?token=）
  */
 import { CapacitorHttp } from "@capacitor/core";
-import { getBaseUrl, isNative, restUrl } from "./server";
+import { getBaseUrl, isNative, restUrl, setBaseUrl } from "./server";
 
 export class ApiError extends Error {
   constructor(
