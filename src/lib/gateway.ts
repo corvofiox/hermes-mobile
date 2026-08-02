@@ -19,7 +19,8 @@ import {
   type GatewayEventName,
   type ConnectionState,
 } from "./vendor/json-rpc-gateway";
-import { getWsTicket, buildWsUrl } from "./api";
+import { getWsTicket } from "./api";
+import { wsUrl } from "./server";
 
 export type { GatewayEvent, GatewayEventName, ConnectionState };
 
@@ -123,7 +124,7 @@ export class HermesGateway {
   private async doConnect(): Promise<void> {
     try {
       const { ticket } = await getWsTicket();
-      await this.client.connect(buildWsUrl(ticket));
+      await this.client.connect(`${wsUrl("/api/ws")}?ticket=${encodeURIComponent(ticket)}`);
       this.reconnectAttempts = 0;
     } catch (err) {
       // 401/403 = 会话过期：getWsTicket 经 apiFetch 已广播 hermes:unauthorized，

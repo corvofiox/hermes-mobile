@@ -200,10 +200,38 @@ button {
   font-size: 15px;
   outline: none;
   transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
 }
 .login-card input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(16, 181, 196, 0.15);
+}
+
+/* 服务器地址行（地址输入 + 测试按钮） */
+.server-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.server-row input {
+  flex: 1;
+  min-width: 0;
+}
+.server-row .btn-sm {
+  flex-shrink: 0;
+  padding: 12px 14px;
+}
+
+.server-ok {
+  font-size: 12px;
+  color: var(--ok);
+  text-align: left;
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
 }
 
 /* ---------- 会话列表 ---------- */

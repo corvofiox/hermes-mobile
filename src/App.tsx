@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getWsTicket } from "./lib/api";
+import { ApiError, getWsTicket, logout } from "./lib/api";
 import { HermesGateway } from "./lib/gateway";
 import LoginPage from "./pages/LoginPage";
 import SessionsPage from "./pages/SessionsPage";
@@ -101,12 +101,8 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback(async () => {
-    // 退出：清 cookie 并回登录页（服务端 /auth/logout 会清 cookie）
-    try {
-      await fetch("/auth/logout", { method: "POST", credentials: "include" });
-    } catch {
-      // 忽略登出接口失败，本地也会跳回登录页
-    }
+    // 退出：清 cookie 并回登录页（原生模式手动清，Web 模式服务端登出清 cookie）
+    await logout();
     gatewayRef.current?.close();
     gatewayRef.current = null;
     setScreen("login");
