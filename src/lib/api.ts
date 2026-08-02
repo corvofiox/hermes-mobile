@@ -131,6 +131,29 @@ export async function passwordLogin(username: string, password: string): Promise
   throw new ApiError(`登录失败 (HTTP ${status})`, status);
 }
 
+/**
+ * 协议自动探测登录：依次尝试候选 base（https → http），
+ * 网络层失败才回退；401（凭据错误）立即抛出不回退。
+ */
+export async function passwordLoginWithFallback(
+  username: string,
+  password: string,
+  candidates: string[],
+): Promise<LoginResult> {
+  let lastErr: unknown = null;
+  for (const base of candidates) {
+    setBaseUrl(base);
+    try {
+      return await passwordLogin(username, password);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) throw err; // 协议已通，凭据错误
+      lastErr = err; // 网络层失败 → 回退下一个候选
+    }
+  }
+  if (lastErr instanceof ApiError) throw lastErr;
+  throw new Error(`无法连接服务器：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
+}
+
 /** 登出：清 cookie 并调用服务端登出 */
 export async function logout(): Promise<void> {
   try {

@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { ApiError, checkServer, passwordLogin } from "../lib/api";
-import { normalizeBaseUrl, setBaseUrl } from "../lib/server";
+import { ApiError, checkServer, passwordLoginWithFallback } from "../lib/api";
+import { baseCandidates, setBaseUrl } from "../lib/server";
 
 interface Props {
   onSuccess: () => void;
@@ -17,17 +17,29 @@ export default function LoginPage({ onSuccess }: Props) {
   const [serverOk, setServerOk] = useState<string>("");
 
   const testServer = async () => {
-    const url = normalizeBaseUrl(serverUrl);
-    setServerUrl(url);
+    const candidates = baseCandidates(serverUrl);
+    if (candidates.length === 0) {
+      setError("请输入服务器地址");
+      return;
+    }
     setTesting(true);
     setServerOk("");
     setError("");
-    const result = await checkServer(url);
-    setTesting(false);
-    if (result.ok) {
-      setServerOk(`✓ 已连接 Hermes v${result.version ?? ""}`);
-    } else {
-      setError(`无法连接服务器：${result.detail ?? "未知错误"}`);
+    try {
+      for (const base of candidates) {
+        const result = await checkServer(base);
+        if (result.ok) {
+          setBaseUrl(base); // 测试成功即记住可用地址
+          setServerUrl(base);
+          setServerOk(`✓ 已连接 Hermes v${result.version ?? ""}`);
+          return;
+        }
+      }
+      // 全部候选失败：报最后一个错误
+      const last = await checkServer(candidates[candidates.length - 1]);
+      setError(`无法连接服务器：${last.detail ?? "未知错误"}`);
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -38,9 +50,13 @@ export default function LoginPage({ onSuccess }: Props) {
     setError("");
     setServerOk("");
     try {
-      // 保存服务器地址后再登录（登录请求走新地址）
-      setBaseUrl(normalizeBaseUrl(serverUrl));
-      await passwordLogin(username, password);
+      // 协议自动探测登录：https → http 回退；无端口默认 9119
+      const candidates = baseCandidates(serverUrl);
+      if (candidates.length === 0) {
+        setError("请输入服务器地址");
+        return;
+      }
+      await passwordLoginWithFallback(username, password, candidates);
       onSuccess();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : `网络错误：${err instanceof Error ? err.message : String(err)}`);
