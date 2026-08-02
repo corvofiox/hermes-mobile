@@ -190,4 +190,23 @@ export class HermesGateway {
   async interrupt(session_id: string): Promise<void> {
     await this.client.request("session.interrupt", { session_id });
   }
+
+  /** 附加图片（base64 直传，服务端写入图片目录并挂载到会话；移动端专用路径） */
+  async attachImage(
+    session_id: string,
+    contentBase64: string,
+    filename?: string,
+  ): Promise<{
+    attached: boolean;
+    path?: string;
+    count?: number;
+    text?: string;
+    error?: unknown;
+  }> {
+    return this.client.request("image.attach_bytes", {
+      session_id,
+      content_base64: contentBase64,
+      ...(filename ? { filename } : {}),
+    });
+  }
 }

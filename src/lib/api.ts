@@ -177,6 +177,8 @@ export async function listSessionsRest(params: {
   source?: string;
   sources?: string;
   exclude_sources?: string;
+  /** 归档过滤：exclude（默认，隐藏归档）/ only（只看归档）/ include（全部） */
+  archived?: "exclude" | "only" | "include";
 } = {}): Promise<RestSession[]> {
   const qs = new URLSearchParams();
   qs.set("limit", String(params.limit ?? 200));
@@ -184,9 +186,55 @@ export async function listSessionsRest(params: {
   if (params.source) qs.set("source", params.source);
   if (params.sources) qs.set("sources", params.sources);
   if (params.exclude_sources) qs.set("exclude_sources", params.exclude_sources);
+  qs.set("archived", params.archived ?? "exclude");
   const { status, data } = await httpRequest(`/api/sessions?${qs.toString()}`);
   if (status !== 200) throw new ApiError(`获取会话列表失败 (HTTP ${status})`, status);
   return ((data as { sessions?: RestSession[] })?.sessions) ?? [];
+}
+
+/** 搜索会话（REST FTS；结果结构为 {results: [...]}，形状与列表行一致） */
+export async function searchSessionsRest(q: string, limit = 30): Promise<RestSession[]> {
+  const qs = new URLSearchParams();
+  qs.set("q", q);
+  qs.set("limit", String(limit));
+  const { status, data } = await httpRequest(`/api/sessions/search?${qs.toString()}`);
+  if (status !== 200) throw new ApiError(`搜索失败 (HTTP ${status})`, status);
+  return ((data as { results?: RestSession[] })?.results) ?? [];
+}
+
+/** 归档 / 取消归档会话 */
+export async function setSessionArchivedRest(sessionId: string, archived: boolean): Promise<void> {
+  const { status } = await httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: { archived },
+  });
+  if (status !== 200) throw new ApiError(`归档操作失败 (HTTP ${status})`, status);
+}
+
+/** 批量删除会话（单事务） */
+export async function bulkDeleteSessionsRest(ids: string[]): Promise<{ deleted: number }> {
+  const { status, data } = await httpRequest("/api/sessions/bulk-delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: { ids },
+  });
+  if (status !== 200) throw new ApiError(`批量删除失败 (HTTP ${status})`, status);
+  return (data as { deleted: number }) ?? { deleted: 0 };
+}
+
+/** 批量归档 / 取消归档（服务端无批量接口，逐个 PATCH；容忍单条失败继续） */
+export async function bulkArchiveSessionsRest(ids: string[], archived: boolean): Promise<number> {
+  let done = 0;
+  for (const id of ids) {
+    try {
+      await setSessionArchivedRest(id, archived);
+      done += 1;
+    } catch {
+      // 单条失败不阻断其余
+    }
+  }
+  return done;
 }
 
 /** 置顶 / 取消置顶会话 */
@@ -242,6 +290,63 @@ export async function checkServer(baseUrl: string): Promise<{ ok: boolean; versi
       detail: isNative() ? base : `${base}（浏览器跨域限制，安装 App 后不受影响）`,
     };
   }
+}
+
+// ---- 模型选项（/api/model/options，与 tui_gateway model.options 同构）----
+
+export interface ModelProvider {
+  slug: string;
+  name: string;
+  models: string[];
+  total_models?: number;
+  authenticated?: boolean;
+  is_current?: boolean;
+  warning?: string;
+  [k: string]: unknown;
+}
+
+export interface ModelOptions {
+  providers: ModelProvider[];
+  model?: string;
+  provider?: string;
+}
+
+/** 拉取可用模型（认证过的 provider + 模型列表） */
+export async function getModelOptions(): Promise<ModelOptions> {
+  const { status, data } = await httpRequest("/api/model/options");
+  if (status !== 200) throw new ApiError(`获取模型列表失败 (HTTP ${status})`, status);
+  const d = (data ?? {}) as Partial<ModelOptions>;
+  return {
+    providers: Array.isArray(d.providers) ? d.providers : [],
+    model: d.model ?? "",
+    provider: d.provider ?? "",
+  };
+}
+
+// ---- 模型偏好持久化（新会话创建时使用）----
+
+const MODEL_PREF_KEY = "hermes.model.pref";
+
+export interface ModelPref {
+  model: string;
+  provider: string;
+}
+
+export function getModelPref(): ModelPref {
+  try {
+    const raw = localStorage.getItem(MODEL_PREF_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ModelPref;
+      if (parsed.model) return parsed;
+    }
+  } catch {
+    // 损坏的偏好忽略，回退默认
+  }
+  return { model: "deepseek-v4-flash", provider: "opencode-go" };
+}
+
+export function setModelPref(pref: ModelPref): void {
+  localStorage.setItem(MODEL_PREF_KEY, JSON.stringify(pref));
 }
 
 // 兼容导出：旧代码引用的 buildWsUrl 由 gateway.ts 改用 server.ts 的 wsUrl

@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  bulkArchiveSessionsRest,
+  bulkDeleteSessionsRest,
   deleteSessionRest,
+  getModelPref,
   listSessionsRest,
   renameSessionRest,
+  searchSessionsRest,
+  setSessionArchivedRest,
   setSessionPinnedRest,
   type RestSession,
 } from "../lib/api";
@@ -64,7 +69,7 @@ function sourceBadge(source?: string): { label: string; cls: string } {
   return { label: source.slice(0, 3), cls: "" };
 }
 
-type TabKey = "all" | "pinned" | "platform" | "cron" | "other";
+type TabKey = "all" | "pinned" | "platform" | "cron" | "other" | "archived";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "all", label: "全部" },
@@ -72,10 +77,11 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "other", label: "其他" },
   { key: "cron", label: "定时任务" },
   { key: "platform", label: "消息平台" },
+  { key: "archived", label: "归档" },
 ];
 
 /** 判断单个会话属于哪个分类 */
-function classifySession(s: RestSession): Exclude<TabKey, "all"> {
+function classifySession(s: RestSession): Exclude<TabKey, "all" | "archived"> {
   if (s.pinned) return "pinned";
   if (s.source === "cron") return "cron";
   if (s.source && PLATFORM_SOURCES.has(s.source)) return "platform";
@@ -84,8 +90,8 @@ function classifySession(s: RestSession): Exclude<TabKey, "all"> {
 
 /** 按分类分组（用于"全部" tab） */
 function groupSessions(sessions: RestSession[]): { key: TabKey; title: string; items: RestSession[] }[] {
-  const order: Exclude<TabKey, "all">[] = ["pinned", "other", "cron", "platform"];
-  const buckets: Record<Exclude<TabKey, "all">, RestSession[]> = {
+  const order: Exclude<TabKey, "all" | "archived">[] = ["pinned", "other", "cron", "platform"];
+  const buckets: Record<Exclude<TabKey, "all" | "archived">, RestSession[]> = {
     pinned: [],
     platform: [],
     cron: [],
@@ -94,7 +100,7 @@ function groupSessions(sessions: RestSession[]): { key: TabKey; title: string; i
   for (const s of sessions) {
     buckets[classifySession(s)].push(s);
   }
-  const titles: Record<Exclude<TabKey, "all">, string> = {
+  const titles: Record<Exclude<TabKey, "all" | "archived">, string> = {
     pinned: "📌 置顶",
     platform: "💬 消息平台",
     cron: "⏰ 定时任务",
@@ -115,10 +121,63 @@ function formatTime(ts?: number): string {
     : d.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
+// ---- 长按手势（pointer 计时，移动端友好）--------------------------------
+
+interface LongPress {
+  timer: ReturnType<typeof setTimeout> | null;
+  startX: number;
+  startY: number;
+}
+
+/** 为会话项挂载长按检测：长按 450ms 且位移 < 12px 触发 onLongPress，并抑制随后的 click */
+function useLongPress(onLongPress: () => void) {
+  const state = useRef<LongPress>({ timer: null, startX: 0, startY: 0 });
+  const fired = useRef(false);
+  const cbRef = useRef(onLongPress);
+  cbRef.current = onLongPress;
+
+  useEffect(() => () => {
+    if (state.current.timer) clearTimeout(state.current.timer);
+  }, []);
+
+  return {
+    onPointerDown: (e: React.PointerEvent) => {
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      fired.current = false;
+      state.current.startX = e.clientX;
+      state.current.startY = e.clientY;
+      if (state.current.timer) clearTimeout(state.current.timer);
+      state.current.timer = setTimeout(() => {
+        fired.current = true;
+        navigator.vibrate?.(12);
+        cbRef.current();
+      }, 450);
+    },
+    onPointerMove: (e: React.PointerEvent) => {
+      if (!state.current.timer) return;
+      if (Math.hypot(e.clientX - state.current.startX, e.clientY - state.current.startY) > 12) {
+        clearTimeout(state.current.timer);
+        state.current.timer = null;
+      }
+    },
+    onPointerUp: () => {
+      if (state.current.timer) clearTimeout(state.current.timer);
+      state.current.timer = null;
+    },
+    onPointerLeave: () => {
+      if (state.current.timer) clearTimeout(state.current.timer);
+      state.current.timer = null;
+    },
+    /** 长按已触发：click 应被抑制（打开会话） */
+    suppressClick: () => fired.current,
+  };
+}
+
 // ---- 页面 ----------------------------------------------------------------
 
 export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props) {
   const [sessions, setSessions] = useState<RestSession[]>([]);
+  const [archivedSessions, setArchivedSessions] = useState<RestSession[]>([]);
   const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -126,22 +185,36 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
   const [busyPin, setBusyPin] = useState<string | null>(null);
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<RestSession | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   const [renaming, setRenaming] = useState<RestSession | null>(null);
+  /** 长按菜单目标会话 */
+  const [menuFor, setMenuFor] = useState<RestSession | null>(null);
+  /** 批量删除确认弹窗 */
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false);
+  /** 多选（批量操作）模式 */
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  /** 搜索 */
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<RestSession[]>([]);
+  const [searching, setSearching] = useState(false);
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshingRef = useRef(false);
 
   // 全部分组 + 各 tab 数量
   const groups = useMemo(() => groupSessions(sessions), [sessions]);
   const counts = useMemo(() => {
-    const c: Record<TabKey, number> = { all: sessions.length, pinned: 0, platform: 0, cron: 0, other: 0 };
+    const c: Record<TabKey, number> = { all: sessions.length, pinned: 0, platform: 0, cron: 0, other: 0, archived: archivedSessions.length };
     for (const s of sessions) c[classifySession(s)]++;
     return c;
-  }, [sessions]);
+  }, [sessions, archivedSessions]);
 
   // 当前 tab 的条目（全部 → 分组；分类 → 平铺该分类）
   const activeItems = useMemo(() => {
     if (activeTab === "all") return null;
+    if (activeTab === "archived") return archivedSessions;
     return sessions.filter((s) => classifySession(s) === activeTab);
-  }, [sessions, activeTab]);
+  }, [sessions, archivedSessions, activeTab]);
 
   const refresh = useCallback(
     async (silent = false) => {
@@ -153,7 +226,7 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
         if (gateway.connectionState !== "open") {
           await gateway.connect();
         }
-        const list = await listSessionsRest({ limit: 200, order: "recent" });
+        const list = await listSessionsRest({ limit: 200, order: "recent", archived: "exclude" });
         setSessions(list);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -165,16 +238,30 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     [gateway],
   );
 
+  /** 拉取归档会话（归档 tab 数据源） */
+  const fetchArchived = useCallback(async (silent = false) => {
+    try {
+      const list = await listSessionsRest({ limit: 200, order: "recent", archived: "only" });
+      setArchivedSessions(list);
+    } catch (err) {
+      if (!silent) setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   useEffect(() => {
     const off = gateway.onConnectionState((s) => setConnState(s));
     void refresh();
+    void fetchArchived(true);
     return off;
-  }, [gateway, refresh]);
+  }, [gateway, refresh, fetchArchived]);
 
   // 30s 轮询刷新（仅页面可见时；切回前台立即刷一次）
   useEffect(() => {
     const tick = () => {
-      if (document.visibilityState === "visible") void refresh(true);
+      if (document.visibilityState === "visible") {
+        void refresh(true);
+        void fetchArchived(true);
+      }
     };
     const id = setInterval(tick, 30_000);
     document.addEventListener("visibilitychange", tick);
@@ -182,7 +269,41 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
       clearInterval(id);
       document.removeEventListener("visibilitychange", tick);
     };
-  }, [refresh]);
+  }, [refresh, fetchArchived]);
+
+  // 搜索：300ms debounce，空查询直接清空
+  useEffect(() => {
+    if (searchTimerRef.current) {
+      clearTimeout(searchTimerRef.current);
+      searchTimerRef.current = null;
+    }
+    const q = searchQuery.trim();
+    if (!q) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    searchTimerRef.current = setTimeout(async () => {
+      try {
+        const results = await searchSessionsRest(q, 30);
+        setSearchResults(results);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+        setSearchResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [searchQuery]);
+
+  // 退出多选模式时清空选择
+  useEffect(() => {
+    if (!multiMode) setSelected(new Set());
+  }, [multiMode]);
 
   const newChat = async () => {
     setError("");
@@ -190,10 +311,11 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
       if (gateway.connectionState !== "open") {
         await gateway.connect();
       }
+      const pref = getModelPref();
       const created = await gateway.createSession({
-        // 显式指定用户的主模型（serve 默认的免费档会被限流 429，实测验证）
-        model: "deepseek-v4-flash",
-        provider: "opencode-go",
+        // 用用户选择的模型偏好（serve 默认的免费档会被限流 429，实测验证）
+        model: pref.model,
+        provider: pref.provider,
       });
       // stored id 用于 REST（重命名/删除）；live id 供 ChatPage 直接使用（create 不持久化，resume 会 404）
       onOpenSession(created.stored_session_id, "", created.session_id);
@@ -207,11 +329,29 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     setError("");
     try {
       await setSessionPinnedRest(s.id, !s.pinned);
-      setSessions((prev) => prev.map((x) => (x.id === s.id ? { ...x, pinned: !s.pinned } : x)));
+      const patch = (prev: RestSession[]) => prev.map((x) => (x.id === s.id ? { ...x, pinned: !s.pinned } : x));
+      setSessions((prev) => patch(prev));
+      setArchivedSessions((prev) => patch(prev));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : String(err));
     } finally {
       setBusyPin(null);
+    }
+  };
+
+  const toggleArchive = async (s: RestSession, archived: boolean) => {
+    setError("");
+    try {
+      await setSessionArchivedRest(s.id, archived);
+      if (archived) {
+        setSessions((prev) => prev.filter((x) => x.id !== s.id));
+        setArchivedSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [{ ...s, archived: true }, ...prev]));
+      } else {
+        setArchivedSessions((prev) => prev.filter((x) => x.id !== s.id));
+        setSessions((prev) => (prev.some((x) => x.id === s.id) ? prev : [{ ...s, archived: false }, ...prev]));
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -221,6 +361,7 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     try {
       await deleteSessionRest(s.id);
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
+      setArchivedSessions((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -234,66 +375,88 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     setError("");
     try {
       await renameSessionRest(s.id, title);
-      setSessions((prev) => prev.map((x) => (x.id === s.id ? { ...x, title } : x)));
+      const patch = (prev: RestSession[]) => prev.map((x) => (x.id === s.id ? { ...x, title } : x));
+      setSessions((prev) => patch(prev));
+      setArchivedSessions((prev) => patch(prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
+  // ---- 批量操作 ----
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const exitMultiMode = () => {
+    setMultiMode(false);
+    setSelected(new Set());
+  };
+
+  const bulkArchive = async (archived: boolean) => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setError("");
+    const done = await bulkArchiveSessionsRest(ids, archived);
+    if (done < ids.length) {
+      setError(`部分归档失败（${done}/${ids.length}）`);
+    }
+    if (archived) {
+      setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
+      setArchivedSessions((prev) => [...prev.filter((x) => !selected.has(x.id)), ...sessions.filter((x) => selected.has(x.id))]);
+    } else {
+      setArchivedSessions((prev) => prev.filter((x) => !selected.has(x.id)));
+      setSessions((prev) => [...prev.filter((x) => !selected.has(x.id)), ...archivedSessions.filter((x) => selected.has(x.id))]);
+    }
+    exitMultiMode();
+  };
+
+  const bulkDelete = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    setBulkDeleting(true);
+    setError("");
+    try {
+      const { deleted } = await bulkDeleteSessionsRest(ids);
+      if (deleted < ids.length) {
+        setError(`部分删除失败（${deleted}/${ids.length}）`);
+      }
+      setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
+      setArchivedSessions((prev) => prev.filter((x) => !selected.has(x.id)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkDeleting(false);
+      exitMultiMode();
+    }
+  };
+
   const renderItem = (s: RestSession) => {
     const badge = sourceBadge(s.source);
+    const selectedFlag = multiMode && selected.has(s.id);
     return (
-      <li key={s.id} className="session-item" onClick={() => onOpenSession(s.id, s.title ?? "")}>
-        <div className="session-main">
-          <div className="session-title">
-            {s.title || "（无标题）"}
-            {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
-          </div>
-          <div className="session-preview">{s.preview || "—"}</div>
-        </div>
-        <div className="session-side">
-          <span className="session-time">{formatTime(s.last_active ?? s.started_at)}</span>
-          <div className="session-actions">
-            <button
-              className="icon-btn"
-              aria-label="重命名会话"
-              title="重命名"
-              onClick={(e) => {
-                e.stopPropagation();
-                setRenaming(s);
-              }}
-            >
-              ✎
-            </button>
-            <button
-              className="icon-btn"
-              disabled={busyPin === s.id}
-              aria-label={s.pinned ? "取消置顶" : "置顶"}
-              title={s.pinned ? "取消置顶" : "置顶"}
-              onClick={(e) => {
-                e.stopPropagation();
-                void togglePin(s);
-              }}
-            >
-              {s.pinned ? "★" : "☆"}
-            </button>
-            <button
-              className="icon-btn"
-              disabled={busyDelete === s.id}
-              aria-label="删除会话"
-              title="删除"
-              onClick={(e) => {
-                e.stopPropagation();
-                setDeleting(s);
-              }}
-            >
-              {busyDelete === s.id ? "…" : "✕"}
-            </button>
-          </div>
-        </div>
-      </li>
+      <SessionItem
+        key={s.id}
+        s={s}
+        badge={badge}
+        multiMode={multiMode}
+        selectedFlag={selectedFlag}
+        busyPin={busyPin}
+        onOpen={() => onOpenSession(s.id, s.title ?? "")}
+        onLongPress={() => setMenuFor(s)}
+        onTogglePin={() => void togglePin(s)}
+        onToggleSelect={() => toggleSelect(s.id)}
+      />
     );
   };
+
+  const searchActive = searchQuery.trim().length > 0;
 
   return (
     <div className="sessions-screen">
@@ -307,24 +470,61 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
             title={connState === "open" ? "已连接" : connState === "idle" || connState === "connecting" ? "连接中…" : "连接断开"}
           />
         </div>
-        <button className="btn btn-primary" onClick={newChat}>
-          ＋ 新对话
-        </button>
+        {multiMode ? (
+          <button className="btn" onClick={exitMultiMode}>
+            完成
+          </button>
+        ) : (
+          <div className="topbar-actions">
+            <button
+              className="btn"
+              onClick={() => {
+                setMultiMode(true);
+                setSearchQuery("");
+              }}
+            >
+              ☑ 选择
+            </button>
+            <button className="btn btn-primary" onClick={newChat}>
+              ＋ 新对话
+            </button>
+          </div>
+        )}
       </header>
 
-      {/* 分类 Tab 栏 */}
-      <nav className="tab-bar">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            className={`tab ${activeTab === t.key ? "active" : ""}`}
-            onClick={() => setActiveTab(t.key)}
-          >
-            {t.label}
-            <span className="tab-count">{counts[t.key]}</span>
-          </button>
-        ))}
-      </nav>
+      {/* 搜索框（归档 tab 与多选模式隐藏） */}
+      {!multiMode && activeTab !== "archived" && (
+        <div className="search-bar">
+          <input
+            className="search-input"
+            type="search"
+            value={searchQuery}
+            placeholder="搜索会话标题与内容…"
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+          {searchActive && (
+            <button className="search-clear" onClick={() => setSearchQuery("")}>
+              ✕
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 分类 Tab 栏（搜索激活时隐藏） */}
+      {!searchActive && (
+        <nav className="tab-bar">
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              className={`tab ${activeTab === t.key ? "active" : ""}`}
+              onClick={() => setActiveTab(t.key)}
+            >
+              {t.label}
+              {t.key !== "archived" && <span className="tab-count">{counts[t.key]}</span>}
+            </button>
+          ))}
+        </nav>
+      )}
 
       {error && (
         <div className="error-banner">
@@ -335,11 +535,21 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
         </div>
       )}
 
-      {loading ? (
+      {searchActive ? (
+        searching ? (
+          <div className="center-screen"><div className="spinner" /></div>
+        ) : searchResults.length === 0 ? (
+          <div className="empty">
+            <p>没有找到「{searchQuery.trim()}」相关会话</p>
+          </div>
+        ) : (
+          <ul className="session-list">{searchResults.map(renderItem)}</ul>
+        )
+      ) : loading ? (
         <div className="center-screen"><div className="spinner" /></div>
       ) : activeItems !== null && activeItems.length === 0 ? (
         <div className="empty">
-          <p>该分类暂无会话</p>
+          <p>{activeTab === "archived" ? "暂无归档会话" : "该分类暂无会话"}</p>
         </div>
       ) : activeItems !== null ? (
         <ul className="session-list">{activeItems.map(renderItem)}</ul>
@@ -359,11 +569,96 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
         </div>
       )}
 
+      {/* 批量操作底部栏 */}
+      {multiMode && (
+        <div className="bulk-bar">
+          <span className="bulk-count">已选 {selected.size} 项</span>
+          <button
+            className="btn"
+            disabled={selected.size === 0 || bulkDeleting}
+            onClick={() => void bulkArchive(activeTab === "archived" ? false : true)}
+          >
+            {activeTab === "archived" ? "恢复" : "归档"}
+          </button>
+          <button
+            className="btn btn-danger"
+            disabled={selected.size === 0 || bulkDeleting}
+            onClick={() => {
+              setBulkConfirmOpen(true);
+            }}
+          >
+            删除
+          </button>
+        </div>
+      )}
+
       <footer className="bottom-bar">
         <button className="btn" onClick={onLogout}>
           退出登录
         </button>
       </footer>
+
+      {/* 长按菜单（ActionSheet） */}
+      {menuFor && (
+        <div className="sheet-overlay" onClick={() => setMenuFor(null)}>
+          <div className="action-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-title">{menuFor.title || "（无标题）"}</div>
+            <button
+              className="sheet-item"
+              onClick={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                setRenaming(target);
+              }}
+            >
+              ✎ 重命名
+            </button>
+            <button
+              className="sheet-item"
+              onClick={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                void togglePin(target);
+              }}
+            >
+              {menuFor.pinned ? "★ 取消置顶" : "☆ 置顶"}
+            </button>
+            <button
+              className="sheet-item"
+              onClick={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                void toggleArchive(target, !target.archived);
+              }}
+            >
+              {menuFor.archived ? "↩ 取消归档" : "🗄 归档"}
+            </button>
+            <button
+              className="sheet-item"
+              onClick={() => {
+                setMenuFor(null);
+                setMultiMode(true);
+                toggleSelect(menuFor.id);
+              }}
+            >
+              ☑ 多选
+            </button>
+            <button
+              className="sheet-item danger"
+              onClick={() => {
+                const target = menuFor;
+                setMenuFor(null);
+                setDeleting(target);
+              }}
+            >
+              ✕ 删除
+            </button>
+            <button className="sheet-item cancel" onClick={() => setMenuFor(null)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       {renaming && (
         <RenameModal
@@ -385,6 +680,97 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
           onConfirm={() => void remove(deleting)}
         />
       )}
+
+      {bulkConfirmOpen && (
+        <ConfirmModal
+          title="批量删除"
+          message={`确定删除选中的 ${selected.size} 个会话吗？此操作不可恢复。`}
+          confirmLabel="删除"
+          danger
+          onCancel={() => setBulkConfirmOpen(false)}
+          onConfirm={() => {
+            setBulkConfirmOpen(false);
+            void bulkDelete();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ---- 会话列表项（独立组件：长按手势需要稳定 hook 挂载点） ----------------
+
+interface SessionItemProps {
+  s: RestSession;
+  badge: { label: string; cls: string };
+  multiMode: boolean;
+  selectedFlag: boolean;
+  busyPin: string | null;
+  onOpen: () => void;
+  onLongPress: () => void;
+  onTogglePin: () => void;
+  onToggleSelect: () => void;
+}
+
+function SessionItem({
+  s,
+  badge,
+  multiMode,
+  selectedFlag,
+  busyPin,
+  onOpen,
+  onLongPress,
+  onTogglePin,
+  onToggleSelect,
+}: SessionItemProps) {
+  const lp = useLongPress(onLongPress);
+  return (
+    <li
+      className={`session-item${selectedFlag ? " selected" : ""}${multiMode ? " multi" : ""}`}
+      onClick={() => {
+        if (lp.suppressClick()) return; // 长按刚触发，忽略本次 click
+        if (multiMode) {
+          onToggleSelect();
+          return;
+        }
+        onOpen();
+      }}
+      onPointerDown={lp.onPointerDown}
+      onPointerMove={lp.onPointerMove}
+      onPointerUp={lp.onPointerUp}
+      onPointerLeave={lp.onPointerLeave}
+      onContextMenu={(e) => {
+        e.preventDefault(); // 屏蔽 WebView 系统长按菜单
+        if (!multiMode) onLongPress();
+      }}
+    >
+      {multiMode && (
+        <span className={`check-box${selectedFlag ? " checked" : ""}`}>{selectedFlag ? "✓" : ""}</span>
+      )}
+      <div className="session-main">
+        <div className="session-title">
+          {s.title || "（无标题）"}
+          {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
+        </div>
+        <div className="session-preview">{s.preview || "—"}</div>
+      </div>
+      <div className="session-side">
+        <span className="session-time">{formatTime(s.last_active ?? s.started_at)}</span>
+        {!multiMode && (
+          <button
+            className="icon-btn"
+            disabled={busyPin === s.id}
+            aria-label={s.pinned ? "取消置顶" : "置顶"}
+            title={s.pinned ? "取消置顶" : "置顶"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+          >
+            {s.pinned ? "★" : "☆"}
+          </button>
+        )}
+      </div>
+    </li>
   );
 }

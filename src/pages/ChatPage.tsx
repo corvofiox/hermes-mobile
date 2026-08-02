@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { renameSessionRest } from "../lib/api";
+import { getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
 import type { GatewayEvent, HermesGateway } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
+import ModelPicker from "../components/ModelPicker";
 
 interface Props {
   gateway: HermesGateway;
@@ -20,6 +21,8 @@ interface Msg {
   text: string;
   streaming?: boolean;
   error?: boolean;
+  /** 用户发送的图片（本地 dataUrl 预览） */
+  images?: string[];
 }
 
 interface ToolActivity {
@@ -27,10 +30,42 @@ interface ToolActivity {
   args?: string;
 }
 
+interface PendingImage {
+  id: number;
+  dataUrl: string;
+  /** attach 响应文本（纯图片发送时作为 prompt） */
+  text: string;
+}
+
 /** streaming 期间代码围栏可能未闭合（奇数个 ```），渲染前补齐闭合标记 */
 function closeUnclosedFence(text: string): string {
   const opens = (text.match(/```/g) ?? []).length;
   return opens % 2 === 1 ? `${text}\n\`\`\`` : text;
+}
+
+/** 代码块：复制按钮 + 等宽渲染 */
+function CodeBlock(props: React.ComponentProps<"pre">) {
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    const text = preRef.current?.textContent ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 剪贴板不可用（权限/WebView）时静默
+    }
+  };
+  return (
+    <div className="code-block">
+      <button className="code-copy" onClick={copy}>
+        {copied ? "✓ 已复制" : "⧉ 复制"}
+      </button>
+      <pre ref={preRef} {...props} />
+    </div>
+  );
 }
 
 export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTitle, onBack }: Props) {
@@ -45,6 +80,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [nearBottom, setNearBottom] = useState(true);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  /** 模型偏好（新会话生效）；当前会话的模型由 resume 时服务端决定 */
+  const [modelPref, setModelPrefState] = useState<ModelPref>(() => getModelPref());
+  const [showModelPicker, setShowModelPicker] = useState(false);
+  /** 已附加待发送的图片 */
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  /** 图片源选择弹窗 */
+  const [showImageSheet, setShowImageSheet] = useState(false);
+  /** 语音识别中 */
+  const [listening, setListening] = useState(false);
+  /** 全屏图片预览（dataUrl 或 http URL） */
+  const [previewImg, setPreviewImg] = useState<string | null>(null);
+  const voiceOffRef = useRef<(() => void) | null>(null);
   const msgId = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
@@ -266,6 +313,14 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
+  // 卸载时清理语音监听器
+  useEffect(() => {
+    return () => {
+      voiceOffRef.current?.();
+      voiceOffRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     if (!nearBottom) return;
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -281,14 +336,19 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
   const send = async () => {
     const text = input.trim();
+    const hasImages = pendingImages.length > 0;
     // resume 完成前（liveSessionIdRef 未就绪）或 re-resume 进行中禁止发送
-    if (!text || busy || !liveSessionIdRef.current || resumingRef.current) return;
+    if ((!text && !hasImages) || busy || !liveSessionIdRef.current || resumingRef.current) return;
+    // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
+    const promptText = text || pendingImages[0]?.text || "";
+    const imageDataUrls = pendingImages.map((p) => p.dataUrl);
     setInput("");
+    setPendingImages([]);
     const newId = nextId();
-    setMessages((prev) => [...prev, { id: newId, role: "user", text }]);
+    setMessages((prev) => [...prev, { id: newId, role: "user", text, images: imageDataUrls }]);
     setBusy(true);
     try {
-      await gateway.submitPrompt(liveSessionIdRef.current, text);
+      await gateway.submitPrompt(liveSessionIdRef.current, promptText);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -314,6 +374,123 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setTitle(name);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  /** 模型选择：持久化偏好（新会话生效） */
+  const handleModelSelect = (pref: ModelPref) => {
+    setModelPrefState(pref);
+    setModelPref(pref);
+    setShowModelPicker(false);
+    setStatus(`模型已切换为 ${pref.model}（新对话生效）`);
+  };
+
+  /** 拍照 / 相册选图 → 压缩 base64 → image.attach_bytes 挂载到会话 */
+  const pickImage = async (source: "camera" | "photos") => {
+    setShowImageSheet(false);
+    const liveId = liveSessionIdRef.current;
+    if (!liveId) {
+      setStatus("会话未就绪，无法附加图片");
+      return;
+    }
+    try {
+      const { Camera, CameraResultType, CameraSource } = await import("@capacitor/camera");
+      const photo = await Camera.getPhoto({
+        source: source === "camera" ? CameraSource.Camera : CameraSource.Photos,
+        resultType: CameraResultType.Base64,
+        quality: 85,
+        width: 1600,
+        promptLabelHeader: "选择图片",
+        promptLabelPhoto: "从相册选择",
+        promptLabelPicture: "拍照",
+        promptLabelCancel: "取消",
+      });
+      if (!photo.base64String) return;
+      const dataUrl = `data:image/${photo.format};base64,${photo.base64String}`;
+      const res = await gateway.attachImage(liveId, photo.base64String, `mobile_${Date.now()}.${photo.format}`);
+      if (res.attached) {
+        setPendingImages((prev) => [
+          ...prev,
+          { id: nextId(), dataUrl, text: res.text ?? `[User attached image: mobile_${Date.now()}]` },
+        ]);
+      } else {
+        setStatus("图片附加失败（服务端未接受）");
+      }
+    } catch (err) {
+      // 用户取消拍照/选图（Camera 抛 "User cancelled"）不算错误
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/cancel/i.test(msg)) return;
+      setStatus(`选择图片失败：${msg}`);
+    }
+  };
+
+  const removePendingImage = (id: number) => {
+    setPendingImages((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  /** 语音输入：Android 系统语音识别 → 文字填入输入框 */
+  const toggleVoice = async () => {
+    if (listening) {
+      await stopVoice();
+      return;
+    }
+    try {
+      const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
+      const available = await SpeechRecognition.available();
+      if (!available.available) {
+        setStatus("当前设备不支持语音识别");
+        return;
+      }
+      const perm = await SpeechRecognition.checkPermissions();
+      if (perm.speechRecognition !== "granted") {
+        const req = await SpeechRecognition.requestPermissions();
+        if (req.speechRecognition !== "granted") {
+          setStatus("需要麦克风权限才能使用语音输入");
+          return;
+        }
+      }
+      // 先清掉旧监听，避免重复注册累积
+      voiceOffRef.current?.();
+      voiceOffRef.current = null;
+      const offPartial = await SpeechRecognition.addListener("partialResults", (data: { matches: string[] }) => {
+        const m = data.matches?.[0];
+        if (m) setInput(m);
+      });
+      const offState = await SpeechRecognition.addListener("listeningState", (data: { status: string }) => {
+        setListening(data.status === "started");
+      });
+      voiceOffRef.current = () => {
+        void offPartial.remove();
+        void offState.remove();
+      };
+      setListening(true);
+      await SpeechRecognition.start({ language: "zh-CN", partialResults: true, popup: false });
+    } catch (err) {
+      setListening(false);
+      const msg = err instanceof Error ? err.message : String(err);
+      setStatus(`语音识别启动失败：${msg}`);
+    }
+  };
+
+  const stopVoice = async () => {
+    try {
+      const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
+      await SpeechRecognition.stop();
+    } catch {
+      // 忽略停止失败
+    }
+    voiceOffRef.current?.();
+    voiceOffRef.current = null;
+    setListening(false);
+  };
+
+  /** 复制消息文本（长按消息触发） */
+  const copyMessage = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setStatus("已复制到剪贴板");
+    } catch {
+      setStatus("复制失败");
     }
   };
 
@@ -350,16 +527,52 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           </div>
         )}
         {messages.map((m) => (
-          <div key={m.id} className={`msg ${m.role}${m.error ? " error" : ""}`}>
+          <div
+            key={m.id}
+            className={`msg ${m.role}${m.error ? " error" : ""}`}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              if (m.text) void copyMessage(m.text);
+            }}
+          >
             {m.role === "user" ? (
               <div className="bubble user-bubble">
-                {m.text}
+                {m.images && m.images.length > 0 && (
+                  <div className="msg-images">
+                    {m.images.map((src, i) => (
+                      <img
+                        key={i}
+                        src={src}
+                        className="msg-image"
+                        alt="发送的图片"
+                        onClick={() => setPreviewImg(src)}
+                      />
+                    ))}
+                  </div>
+                )}
+                {m.text && <div className="user-text">{m.text}</div>}
                 {m.error && <span className="send-failed">⚠️ 发送失败</span>}
               </div>
             ) : (
               <div className="bubble assistant-bubble">
                 <div className="markdown-body">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      pre: CodeBlock,
+                      img: ({ src, alt }) => (
+                        <img
+                          src={src}
+                          alt={alt ?? ""}
+                          className="md-image"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (src) setPreviewImg(src);
+                          }}
+                        />
+                      ),
+                    }}
+                  >
                     {m.streaming ? closeUnclosedFence(m.text) : m.text}
                   </ReactMarkdown>
                 </div>
@@ -393,25 +606,107 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       </div>
 
       <footer className="composer">
-        <textarea
-          ref={textareaRef}
-          value={input}
-          placeholder="输入消息…"
-          rows={1}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            // 中文输入法组词中的 Enter 不应触发发送
-            if (e.nativeEvent.isComposing) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void send();
+        {/* 已附加图片预览条 */}
+        {pendingImages.length > 0 && (
+          <div className="pending-images">
+            {pendingImages.map((p) => (
+              <div key={p.id} className="pending-img-wrap">
+                <img src={p.dataUrl} className="pending-img" alt="待发送" />
+                <button
+                  className="pending-img-remove"
+                  onClick={() => removePendingImage(p.id)}
+                  aria-label="移除图片"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button className="btn btn-sm pending-add" onClick={() => setShowImageSheet(true)}>
+              ＋
+            </button>
+          </div>
+        )}
+        <div className="composer-row">
+          <button
+            className="attach-btn"
+            title="发送图片"
+            onClick={() => setShowImageSheet(true)}
+            disabled={!liveSessionIdRef.current || resumingRef.current}
+          >
+            ＋
+          </button>
+          <button
+            className="model-btn"
+            title="选择模型（新对话生效）"
+            onClick={() => setShowModelPicker(true)}
+          >
+            <span className="model-btn-name">{modelPref.model}</span>
+          </button>
+          <textarea
+            ref={textareaRef}
+            value={input}
+            placeholder="输入消息…"
+            rows={1}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              // 中文输入法组词中的 Enter 不应触发发送
+              if (e.nativeEvent.isComposing) return;
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <button
+            className={`voice-btn${listening ? " listening" : ""}`}
+            title={listening ? "结束语音输入" : "语音输入"}
+            onClick={() => void toggleVoice()}
+            disabled={busy || !liveSessionIdRef.current || resumingRef.current}
+          >
+            {listening ? "■" : "🎤"}
+          </button>
+          <button
+            className="btn btn-primary send-btn"
+            onClick={send}
+            disabled={
+              busy ||
+              (!input.trim() && pendingImages.length === 0) ||
+              !liveSessionIdRef.current ||
+              resumingRef.current
             }
-          }}
-        />
-        <button className="btn btn-primary send-btn" onClick={send} disabled={busy || !input.trim() || !liveSessionIdRef.current || resumingRef.current}>
-          发送
-        </button>
+          >
+            发送
+          </button>
+        </div>
       </footer>
+
+      {/* 图片源选择 */}
+      {showImageSheet && (
+        <div className="sheet-overlay" onClick={() => setShowImageSheet(false)}>
+          <div className="action-sheet" onClick={(e) => e.stopPropagation()}>
+            <div className="sheet-title">发送图片</div>
+            <button className="sheet-item" onClick={() => void pickImage("camera")}>
+              📷 拍照
+            </button>
+            <button className="sheet-item" onClick={() => void pickImage("photos")}>
+              🖼 从相册选择
+            </button>
+            <button className="sheet-item cancel" onClick={() => setShowImageSheet(false)}>
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 全屏图片预览 */}
+      {previewImg && (
+        <div className="img-preview-overlay" onClick={() => setPreviewImg(null)}>
+          <img src={previewImg} alt="预览" className="img-preview-full" />
+          <button className="img-preview-close" onClick={() => setPreviewImg(null)}>
+            ✕
+          </button>
+        </div>
+      )}
 
       {renaming && (
         <RenameModal
@@ -420,6 +715,14 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           placeholder="输入新名字"
           onCancel={() => setRenaming(false)}
           onConfirm={(v) => void doRename(v)}
+        />
+      )}
+
+      {showModelPicker && (
+        <ModelPicker
+          current={modelPref}
+          onSelect={handleModelSelect}
+          onCancel={() => setShowModelPicker(false)}
         />
       )}
     </div>
