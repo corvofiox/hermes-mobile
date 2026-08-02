@@ -9,3 +9,4 @@ android/local.properties
 *.log
 tsconfig.tsbuildinfo
 .cache/
+dist-apk/
