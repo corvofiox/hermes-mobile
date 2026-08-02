@@ -475,7 +475,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       await stopVoice();
       return;
     }
-    if (voiceStartLockRef.current) return; // 防连点：start 流程进行中忽略第二次点击
+    if (voiceStartLockRef.current) {
+      // stop 进行中（≤2s 超时窗口）：等待其完成再启动，而不是静默忽略点击
+      while (voiceStartLockRef.current) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        if (!mountedRef.current) return; // 等待期间返回列表则放弃
+      }
+    }
     voiceStartLockRef.current = true;
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
