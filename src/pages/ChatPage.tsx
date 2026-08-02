@@ -343,7 +343,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       voiceOffRef.current?.();
       voiceOffRef.current = null;
       import("@capacitor-community/speech-recognition")
-        .then(({ SpeechRecognition }) => SpeechRecognition.stop())
+        .then(async ({ SpeechRecognition }) => {
+          // stop() 不 resolve（插件实现缺陷），加超时避免挂起的 promise 滞留
+          await Promise.race([
+            SpeechRecognition.stop(),
+            new Promise((resolve) => setTimeout(resolve, 2000)),
+          ]);
+        })
         .catch(() => {
           // 非原生环境无插件，忽略
         });
@@ -531,14 +537,20 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     voiceStartLockRef.current = true; // 停止进行中禁止立即重开（防 stop/start 竞态）
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
-      await SpeechRecognition.stop();
+      // 坑：插件 Android 实现 stop() 不 resolve PluginCall → await 永久挂起。
+      // 加超时保护，保证锁与监听清理必然执行（否则 stop 后无法再次 start）。
+      await Promise.race([
+        SpeechRecognition.stop(),
+        new Promise((resolve) => setTimeout(resolve, 2000)),
+      ]);
     } catch {
       // 忽略停止失败（插件已卸载/非原生环境）
     } finally {
       voiceStartLockRef.current = false;
+      // 清理监听移到 finally：无论 stop 是否挂起都执行（避免 addListener 累积）
+      voiceOffRef.current?.();
+      voiceOffRef.current = null;
     }
-    voiceOffRef.current?.();
-    voiceOffRef.current = null;
   };
 
   /** 复制消息文本（长按消息触发） */
