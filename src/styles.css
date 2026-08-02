@@ -35,6 +35,8 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  /* 禁用 Android WebView 系统默认点击高亮（矩形块），保留我们自己设计的 :active 反馈 */
+  -webkit-tap-highlight-color: transparent;
 }
 
 html,
