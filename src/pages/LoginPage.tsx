@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { ApiError, checkServer, passwordLogin } from "../lib/api";
-import { getBaseUrl, normalizeBaseUrl, setBaseUrl } from "../lib/server";
+import { normalizeBaseUrl, setBaseUrl } from "../lib/server";
 
 interface Props {
   onSuccess: () => void;
 }
 
 export default function LoginPage({ onSuccess }: Props) {
-  const [serverUrl, setServerUrl] = useState(getBaseUrl());
+  // 不预填默认服务器地址（避免暴露内网 IP）；由用户手动输入，占位符给出格式示例
+  const [serverUrl, setServerUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -58,7 +59,7 @@ export default function LoginPage({ onSuccess }: Props) {
           <div className="server-row">
             <input
               type="text"
-              placeholder="服务器地址，如 http://192.168.10.10:9119"
+              placeholder="http://192.168.x.x:9119"
               autoCapitalize="none"
               autoCorrect="off"
               value={serverUrl}
