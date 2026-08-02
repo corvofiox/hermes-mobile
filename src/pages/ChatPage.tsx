@@ -282,14 +282,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         .filter((m) => m.role === "user" || m.role === "assistant")
         .map((m) => {
           const raw = String(m.text ?? m.content ?? "");
-          // 历史消息中的 @file: 引用还原为文件卡片（服务端文本为 "@file:path" 或带说明）
-          const fileRefs = raw.match(/@file:[^\s\n"']+/g) ?? [];
+          // 历史消息中的 @file: 引用还原为文件卡片。
+          // 服务端对含空格/特殊字符路径的引用加引号（_format_ref_value：`"..."` 或 `'...'`），
+          // 正则需引号感知。
+          const fileRefs = raw.match(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g) ?? [];
           const files = fileRefs.map((ref) => {
-            const path = ref.replace(/^@file:/, "");
+            const path = ref.replace(/^@file:/, "").replace(/^["'`]|["'`]$/g, "");
             const name = path.split("/").pop() ?? path;
             return { name, size: 0 };
           });
-          const text = fileRefs.length > 0 ? raw.replace(/@file:[^\s\n"']+/g, "").trim() : raw;
+          const text = fileRefs.length > 0
+            ? raw.replace(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g, "").trim()
+            : raw;
           return {
             id: nextId(),
             role: m.role as "user" | "assistant",
@@ -414,6 +418,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     if ((!text && !hasImages && !hasFiles) || busy || !liveSessionIdRef.current || resumingRef.current) return;
     if (sendLockRef.current) return; // in-flight 守卫（busy state 更新前连按两次）
     sendLockRef.current = true;
+    // 上传中的文件 refText 为空：此时发送会丢失引用产生孤儿附件，拦截
+    if (pendingFiles.some((f) => f.uploading)) {
+      setStatus("文件仍在上传中，请稍候…");
+      sendLockRef.current = false;
+      return;
+    }
     // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
     // 文件：@file: 引用拼入 prompt（agent 文件工具可读）
     const imageText = hasImages && !text ? pendingImages[0]?.text || "" : "";

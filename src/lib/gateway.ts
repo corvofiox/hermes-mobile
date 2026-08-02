@@ -89,8 +89,8 @@ export class HermesGateway {
       connectErrorMessage: "连接失败",
       notConnectedErrorMessage: "网关未连接",
       // 大文件 attach（最高 256MB → base64 ~341MB 帧）传输可能超默认 120s；
-      // 全局放宽到 5 分钟，普通请求响应秒级不受影响
-      requestTimeoutMs: 300_000,
+      // 600s 覆盖 5Mbps 上行传输 256MB（约 9 分钟）；普通请求响应秒级不受影响
+      requestTimeoutMs: 600_000,
     });
     // 断线自动重连（closed/error → 指数退避重试，重取 ticket）
     this.client.onState((state) => {
