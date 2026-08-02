@@ -18,6 +18,9 @@ import ConfirmModal from "../components/ConfirmModal";
 
 interface Props {
   gateway: HermesGateway;
+  /** 当前分类 tab（App 提升状态，退出对话返回时保持） */
+  activeTab: SessionTabKey;
+  onTabChange: (tab: SessionTabKey) => void;
   onOpenSession: (id: string, title: string, liveId?: string) => void;
   onLogout: () => void;
 }
@@ -70,6 +73,8 @@ function sourceBadge(source?: string): { label: string; cls: string } {
 }
 
 type TabKey = "all" | "pinned" | "platform" | "cron" | "other" | "archived";
+
+export type SessionTabKey = TabKey;
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "all", label: "全部" },
@@ -175,10 +180,9 @@ function useLongPress(onLongPress: () => void) {
 
 // ---- 页面 ----------------------------------------------------------------
 
-export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props) {
+export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSession, onLogout }: Props) {
   const [sessions, setSessions] = useState<RestSession[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<RestSession[]>([]);
-  const [activeTab, setActiveTab] = useState<TabKey>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [connState, setConnState] = useState(gateway.connectionState);
@@ -315,7 +319,7 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     if (multiMode) {
       setSelected(new Set());
     }
-    setActiveTab(key);
+    onTabChange(key);
   };
 
   const newChat = async () => {

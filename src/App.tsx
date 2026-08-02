@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getWsTicket, logout } from "./lib/api";
 import { HermesGateway } from "./lib/gateway";
 import LoginPage from "./pages/LoginPage";
-import SessionsPage from "./pages/SessionsPage";
+import SessionsPage, { type SessionTabKey } from "./pages/SessionsPage";
 import ChatPage from "./pages/ChatPage";
 
 type Screen = "boot" | "login" | "sessions" | "chat";
@@ -13,6 +13,8 @@ export default function App() {
   const [bootDetail, setBootDetail] = useState<string>("");
   const [bootTick, setBootTick] = useState(0);
   const [activeSession, setActiveSession] = useState<{ id: string; title: string; liveId?: string } | null>(null);
+  /** 会话列表分类 tab（提升到 App：退出对话返回列表时保持选中状态） */
+  const [sessionTab, setSessionTab] = useState<SessionTabKey>("all");
   const gatewayRef = useRef<HermesGateway | null>(null);
   /** 供 Capacitor 返回键回调读取当前屏幕（避免在 setState updater 里做副作用） */
   const screenRef = useRef<Screen>("boot");
@@ -155,6 +157,7 @@ export default function App() {
   if (screen === "chat" && activeSession) {
     return (
       <ChatPage
+        key={activeSession.id} // 每个会话独立实例：避免跨会话复用残留 live id/消息/语音状态
         gateway={getGateway()}
         sessionId={activeSession.id}
         sessionLiveId={activeSession.liveId}
@@ -167,6 +170,8 @@ export default function App() {
   return (
     <SessionsPage
       gateway={getGateway()}
+      activeTab={sessionTab}
+      onTabChange={setSessionTab}
       onOpenSession={handleOpenSession}
       onLogout={handleLogout}
     />

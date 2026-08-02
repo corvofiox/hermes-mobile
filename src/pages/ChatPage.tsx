@@ -80,6 +80,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [nearBottom, setNearBottom] = useState(true);
   const [historyFailed, setHistoryFailed] = useState(false);
   const [reloadTick, setReloadTick] = useState(0);
+  /** 历史消息加载中（旧会话 resume 期间显示加载效果，不显示 empty 文案） */
+  const [historyLoading, setHistoryLoading] = useState(false);
   /** 模型偏好（新会话生效）；当前会话的模型由 resume 时服务端决定 */
   const [modelPref, setModelPrefState] = useState<ModelPref>(() => getModelPref());
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -87,8 +89,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   /** 图片源选择弹窗 */
   const [showImageSheet, setShowImageSheet] = useState(false);
-  /** 语音识别中 */
+  /** 语音识别中（ref 同步副本：listeningState 事件不可靠时用 ref 判断，防 stale） */
   const [listening, setListening] = useState(false);
+  const listeningRef = useRef(false);
+  const setListeningBoth = (v: boolean) => {
+    listeningRef.current = v;
+    setListening(v);
+  };
   /** 全屏图片预览（dataUrl 或 http URL） */
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const voiceOffRef = useRef<(() => void) | null>(null);
@@ -224,6 +231,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const doResume = useCallback(async () => {
     if (resumingRef.current) return;
     resumingRef.current = true;
+    setHistoryLoading(true);
     setHistoryFailed(false);
     // 清空滞留的 delta 缓冲：重连恢复时旧缓冲可能被 rAF 推成"幽灵转圈消息"
     if (rafRef.current != null) {
@@ -277,6 +285,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       }
     } finally {
       resumingRef.current = false;
+      setHistoryLoading(false);
     }
   }, [gateway, sessionId]);
 
@@ -420,8 +429,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         promptLabelCancel: "取消",
       });
       if (!photo.base64String) return;
-      const dataUrl = `data:image/${photo.format};base64,${photo.base64String}`;
-      const res = await gateway.attachImage(liveId, photo.base64String, `mobile_${Date.now()}.${photo.format}`);
+      const fmt = photo.format && /^[a-z0-9]+$/i.test(photo.format) ? photo.format : "jpeg";
+      const dataUrl = `data:image/${fmt};base64,${photo.base64String}`;
+      const res = await gateway.attachImage(liveId, photo.base64String, `mobile_${Date.now()}.${fmt}`);
       if (res.attached) {
         setPendingImages((prev) => [
           ...prev,
@@ -444,7 +454,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
   /** 语音输入：Android 系统语音识别 → 文字填入输入框 */
   const toggleVoice = async () => {
-    if (listening) {
+    if (listeningRef.current) {
       await stopVoice();
       return;
     }
@@ -473,16 +483,16 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         if (m) setInput(m);
       });
       const offState = await SpeechRecognition.addListener("listeningState", (data: { status: string }) => {
-        setListening(data.status === "started");
+        setListeningBoth(data.status === "started");
       });
       voiceOffRef.current = () => {
         void offPartial.remove();
         void offState.remove();
       };
-      setListening(true);
+      setListeningBoth(true);
       await SpeechRecognition.start({ language: "zh-CN", partialResults: true, popup: false });
     } catch (err) {
-      setListening(false);
+      setListeningBoth(false);
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`语音识别启动失败：${msg}`);
     } finally {
@@ -491,15 +501,16 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   };
 
   const stopVoice = async () => {
+    // 显式复位状态（listeningState 事件在部分设备上不可靠，不能依赖事件关闭）
+    setListeningBoth(false);
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
       await SpeechRecognition.stop();
     } catch {
-      // 忽略停止失败
+      // 忽略停止失败（插件已卸载/非原生环境）
     }
     voiceOffRef.current?.();
     voiceOffRef.current = null;
-    setListening(false);
   };
 
   /** 复制消息文本（长按消息触发） */
@@ -539,7 +550,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       </header>
 
       <div className="chat-body" ref={chatBodyRef}>
-        {messages.length === 0 && (
+        {historyLoading && messages.length === 0 && (
+          <div className="empty">
+            <div className="spinner" />
+            <p>正在加载对话…</p>
+          </div>
+        )}
+        {!historyLoading && messages.length === 0 && (
           <div className="empty">
             <p>开始和 Hermes 对话吧</p>
           </div>
@@ -624,7 +641,19 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       </div>
 
       <footer className="composer">
-        {/* 已附加图片预览条 */}
+        {/* 模型选择独立一行（小屏不被输入行挤压） */}
+        <div className="composer-model-row">
+          <button
+            className="model-btn"
+            title="选择模型（新对话生效）"
+            onClick={() => setShowModelPicker(true)}
+          >
+            <span className="model-btn-name">{modelPref.model}</span>
+          </button>
+          <span className="composer-model-hint">点此切换模型，新对话生效</span>
+        </div>
+
+        {/* 已附加图片预览条（独立一行） */}
         {pendingImages.length > 0 && (
           <div className="pending-images">
             {pendingImages.map((p) => (
@@ -652,13 +681,6 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             disabled={!liveSessionIdRef.current || resumingRef.current}
           >
             ＋
-          </button>
-          <button
-            className="model-btn"
-            title="选择模型（新对话生效）"
-            onClick={() => setShowModelPicker(true)}
-          >
-            <span className="model-btn-name">{modelPref.model}</span>
           </button>
           <textarea
             ref={textareaRef}
