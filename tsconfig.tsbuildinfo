@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/lib/api.ts","./src/lib/gateway.ts","./src/lib/vendor/json-rpc-gateway.ts","./src/lib/vendor/websocket-url.ts","./src/pages/ChatPage.tsx","./src/pages/LoginPage.tsx","./src/pages/SessionsPage.tsx"],"version":"5.9.3"}

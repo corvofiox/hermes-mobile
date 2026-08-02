@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Hermes Mobile</string>
+    <string name="title_activity_main">Hermes Mobile</string>
+    <string name="package_name">com.yangyu.hermesmobile</string>
+    <string name="custom_url_scheme">com.yangyu.hermesmobile</string>
+</resources>
