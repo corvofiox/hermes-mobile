@@ -209,4 +209,25 @@ export class HermesGateway {
       ...(filename ? { filename } : {}),
     });
   }
+
+  /** 附加文件（data_url 上传，服务端写入 workspace；返回 @file: 引用文本） */
+  async attachFile(
+    session_id: string,
+    dataUrl: string,
+    name?: string,
+  ): Promise<{
+    attached: boolean;
+    name?: string;
+    path?: string;
+    ref_path?: string;
+    ref_text?: string;
+    uploaded?: boolean;
+    error?: unknown;
+  }> {
+    return this.client.request("file.attach", {
+      session_id,
+      data_url: dataUrl,
+      ...(name ? { name } : {}),
+    });
+  }
 }

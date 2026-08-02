@@ -1425,3 +1425,87 @@ button {
   color: var(--text-dim);
   opacity: 0.7;
 }
+
+/* ========== 文件发送功能 ========== */
+
+/* 待发送文件预览条 */
+.pending-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 2px;
+  width: 100%;
+}
+.pending-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(16, 49, 63, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  min-width: 0;
+}
+.pending-file-icon {
+  flex-shrink: 0;
+  font-size: 15px;
+}
+.pending-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pending-file-size {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.pending-file-remove {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: #d64545;
+  color: #fff;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 消息内文件展示 */
+.msg-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.msg-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(16, 49, 63, 0.06);
+  border-radius: 8px;
+  min-width: 0;
+}
+.msg-file-icon {
+  flex-shrink: 0;
+}
+.msg-file-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.msg-file-size {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-dim);
+}

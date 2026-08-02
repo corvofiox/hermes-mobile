@@ -23,6 +23,8 @@ interface Msg {
   error?: boolean;
   /** 用户发送的图片（本地 dataUrl 预览） */
   images?: string[];
+  /** 用户发送的文件（名称展示） */
+  files?: { name: string; size: number }[];
 }
 
 interface ToolActivity {
@@ -36,6 +38,17 @@ interface PendingImage {
   /** attach 响应文本（纯图片发送时作为 prompt） */
   text: string;
 }
+
+interface PendingFile {
+  id: number;
+  name: string;
+  size: number;
+  /** file.attach 返回的 @file: 引用（发送时拼入 prompt） */
+  refText: string;
+}
+
+/** 文件上传大小上限（base64 放大 33% + WS 传输/WebView 内存约束） */
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
 /** streaming 期间代码围栏可能未闭合（奇数个 ```），渲染前补齐闭合标记 */
 function closeUnclosedFence(text: string): string {
@@ -89,8 +102,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [showModelPicker, setShowModelPicker] = useState(false);
   /** 已附加待发送的图片 */
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  /** 已附加待发送的文件 */
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   /** 图片源选择弹窗 */
   const [showImageSheet, setShowImageSheet] = useState(false);
+  /** 隐藏的文件选择 input（系统文件选择器） */
+  const fileInputRef = useRef<HTMLInputElement>(null);
   /** 语音识别中（ref 同步副本：listeningState 事件不可靠时用 ref 判断，防 stale） */
   const [listening, setListening] = useState(false);
   const listeningRef = useRef(false);
@@ -373,17 +390,25 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const send = async () => {
     const text = input.trim();
     const hasImages = pendingImages.length > 0;
+    const hasFiles = pendingFiles.length > 0;
     // resume 完成前（liveSessionIdRef 未就绪）或 re-resume 进行中禁止发送
-    if ((!text && !hasImages) || busy || !liveSessionIdRef.current || resumingRef.current) return;
+    if ((!text && !hasImages && !hasFiles) || busy || !liveSessionIdRef.current || resumingRef.current) return;
     if (sendLockRef.current) return; // in-flight 守卫（busy state 更新前连按两次）
     sendLockRef.current = true;
     // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
-    const promptText = text || pendingImages[0]?.text || "";
+    // 文件：@file: 引用拼入 prompt（agent 文件工具可读）
+    const imageText = hasImages && !text ? pendingImages[0]?.text || "" : "";
+    const fileText = hasFiles
+      ? `${text ? "\n" : ""}${pendingFiles.map((f) => f.refText).join("\n")}`
+      : "";
+    const promptText = `${text}${imageText}${fileText}`.trim();
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
+    const fileInfos = pendingFiles.map((f) => ({ name: f.name, size: f.size }));
     setInput("");
     setPendingImages([]);
+    setPendingFiles([]);
     const newId = nextId();
-    setMessages((prev) => [...prev, { id: newId, role: "user", text, images: imageDataUrls }]);
+    setMessages((prev) => [...prev, { id: newId, role: "user", text, images: imageDataUrls, files: fileInfos }]);
     setBusy(true);
     try {
       await gateway.submitPrompt(liveSessionIdRef.current, promptText);
@@ -467,6 +492,50 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
   const removePendingImage = (id: number) => {
     setPendingImages((prev) => prev.filter((p) => p.id !== id));
+  };
+
+  /** 选择文件 → FileReader 转 data_url → file.attach 挂载到会话 */
+  const pickFile = async (file: File) => {
+    const liveId = liveSessionIdRef.current;
+    if (!liveId) {
+      setStatus("会话未就绪，无法附加文件");
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setStatus(`文件过大（上限 20MB）：${file.name}`);
+      return;
+    }
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("读取文件失败"));
+        reader.readAsDataURL(file);
+      });
+      const res = await gateway.attachFile(liveId, dataUrl, file.name);
+      const refText = res.ref_text ?? "";
+      if (res.attached && refText) {
+        setPendingFiles((prev) => [
+          ...prev,
+          { id: nextId(), name: res.name ?? file.name, size: file.size, refText },
+        ]);
+      } else {
+        setStatus(`文件附加失败：${file.name}`);
+      }
+    } catch (err) {
+      setStatus(`选择文件失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const removePendingFile = (id: number) => {
+    setPendingFiles((prev) => prev.filter((f) => f.id !== id));
+  };
+
+  /** 格式化文件大小显示 */
+  const formatSize = (bytes: number): string => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
   /** 语音输入：Android 系统语音识别 → 文字填入输入框 */
@@ -631,6 +700,17 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                     ))}
                   </div>
                 )}
+                {m.files && m.files.length > 0 && (
+                  <div className="msg-files">
+                    {m.files.map((f, i) => (
+                      <div key={i} className="msg-file">
+                        <span className="msg-file-icon">📄</span>
+                        <span className="msg-file-name">{f.name}</span>
+                        <span className="msg-file-size">{formatSize(f.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {m.text && <div className="user-text">{m.text}</div>}
                 {m.error && <span className="send-failed">⚠️ 发送失败</span>}
               </div>
@@ -719,6 +799,41 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             </button>
           </div>
         )}
+
+        {/* 已附加文件预览条（独立一行） */}
+        {pendingFiles.length > 0 && (
+          <div className="pending-files">
+            {pendingFiles.map((f) => (
+              <div key={f.id} className="pending-file">
+                <span className="pending-file-icon">📄</span>
+                <span className="pending-file-name">{f.name}</span>
+                <span className="pending-file-size">{formatSize(f.size)}</span>
+                <button
+                  className="pending-file-remove"
+                  onClick={() => removePendingFile(f.id)}
+                  aria-label="移除文件"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <button className="btn btn-sm pending-add" onClick={() => fileInputRef.current?.click()}>
+              ＋
+            </button>
+          </div>
+        )}
+
+        {/* 隐藏的文件选择 input（系统文件选择器） */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          style={{ display: "none" }}
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) void pickFile(file);
+            e.target.value = ""; // 允许重复选择同一文件
+          }}
+        />
         <div className="composer-row">
           <button
             className="attach-btn"
@@ -756,7 +871,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             onClick={send}
             disabled={
               busy ||
-              (!input.trim() && pendingImages.length === 0) ||
+              (!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0) ||
               !liveReady ||
               resumingRef.current
             }
@@ -776,6 +891,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             </button>
             <button className="sheet-item" onClick={() => void pickImage("photos")}>
               🖼 从相册选择
+            </button>
+            <button className="sheet-item" onClick={() => fileInputRef.current?.click()}>
+              📄 发送文件
             </button>
             <button className="sheet-item cancel" onClick={() => setShowImageSheet(false)}>
               取消
