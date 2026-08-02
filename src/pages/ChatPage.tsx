@@ -96,6 +96,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const bottomRef = useRef<HTMLDivElement>(null);
   const chatBodyRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  /** 发送 in-flight 守卫（busy state 异步更新，防连按双发） */
+  const sendLockRef = useRef(false);
+  /** 语音启动 in-flight 守卫（listening state 异步更新，防连点交错 start） */
+  const voiceStartLockRef = useRef(false);
   /** live session_id（resume/create 响应的 session_id），事件过滤/发送/interrupt 都用它 */
   const liveSessionIdRef = useRef<string | null>(null);
   const historyLoaded = useRef(false);
@@ -264,7 +268,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         liveSessionIdRef.current = null;
         setBusy(false);
         setTool(null);
-        setStatus("");
+        setStatus("会话已过期（未发送过消息的新会话重连后需重新创建）");
       } else {
         resumeSucceededRef.current = false;
         historyLoaded.current = false; // 允许重试按钮重新触发加载
@@ -313,17 +317,23 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     return () => el.removeEventListener("scroll", onScroll);
   }, []);
 
-  // 卸载时清理语音监听器
+  // 卸载时清理语音监听器 + 停止麦克风（防止返回列表后仍在录音）
   useEffect(() => {
     return () => {
       voiceOffRef.current?.();
       voiceOffRef.current = null;
+      import("@capacitor-community/speech-recognition")
+        .then(({ SpeechRecognition }) => SpeechRecognition.stop())
+        .catch(() => {
+          // 非原生环境无插件，忽略
+        });
     };
   }, []);
 
   useEffect(() => {
     if (!nearBottom) return;
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // auto（非 smooth）：流式高频更新时避免滚动动画排队卡顿
+    bottomRef.current?.scrollIntoView({ behavior: "auto" });
   }, [messages, status, nearBottom]);
 
   // textarea 自动增高（max-height 120px，CSS 兜底）
@@ -339,6 +349,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     const hasImages = pendingImages.length > 0;
     // resume 完成前（liveSessionIdRef 未就绪）或 re-resume 进行中禁止发送
     if ((!text && !hasImages) || busy || !liveSessionIdRef.current || resumingRef.current) return;
+    if (sendLockRef.current) return; // in-flight 守卫（busy state 更新前连按两次）
+    sendLockRef.current = true;
     // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
     const promptText = text || pendingImages[0]?.text || "";
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
@@ -354,6 +366,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setBusy(false);
       // 发送失败：把刚 push 的用户消息标记 error
       setMessages((prev) => prev.map((m) => (m.id === newId ? { ...m, error: true } : m)));
+    } finally {
+      sendLockRef.current = false;
     }
   };
 
@@ -434,6 +448,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       await stopVoice();
       return;
     }
+    if (voiceStartLockRef.current) return; // 防连点：start 流程进行中忽略第二次点击
+    voiceStartLockRef.current = true;
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
       const available = await SpeechRecognition.available();
@@ -469,6 +485,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setListening(false);
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`语音识别启动失败：${msg}`);
+    } finally {
+      voiceStartLockRef.current = false;
     }
   };
 

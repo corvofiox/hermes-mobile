@@ -223,18 +223,20 @@ export async function bulkDeleteSessionsRest(ids: string[]): Promise<{ deleted: 
   return (data as { deleted: number }) ?? { deleted: 0 };
 }
 
-/** 批量归档 / 取消归档（服务端无批量接口，逐个 PATCH；容忍单条失败继续） */
-export async function bulkArchiveSessionsRest(ids: string[], archived: boolean): Promise<number> {
-  let done = 0;
+/** 批量归档 / 取消归档（服务端无批量接口，逐个 PATCH；返回精确失败列表） */
+export async function bulkArchiveSessionsRest(
+  ids: string[],
+  archived: boolean,
+): Promise<{ done: number; failedIds: string[] }> {
+  const failedIds: string[] = [];
   for (const id of ids) {
     try {
       await setSessionArchivedRest(id, archived);
-      done += 1;
     } catch {
-      // 单条失败不阻断其余
+      failedIds.push(id); // 单条失败不阻断其余
     }
   }
-  return done;
+  return { done: ids.length - failedIds.length, failedIds };
 }
 
 /** 置顶 / 取消置顶会话 */

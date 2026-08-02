@@ -136,9 +136,14 @@ function useLongPress(onLongPress: () => void) {
   const cbRef = useRef(onLongPress);
   cbRef.current = onLongPress;
 
-  useEffect(() => () => {
-    if (state.current.timer) clearTimeout(state.current.timer);
-  }, []);
+  const clearTimer = () => {
+    if (state.current.timer) {
+      clearTimeout(state.current.timer);
+      state.current.timer = null;
+    }
+  };
+
+  useEffect(() => clearTimer, []);
 
   return {
     onPointerDown: (e: React.PointerEvent) => {
@@ -146,7 +151,7 @@ function useLongPress(onLongPress: () => void) {
       fired.current = false;
       state.current.startX = e.clientX;
       state.current.startY = e.clientY;
-      if (state.current.timer) clearTimeout(state.current.timer);
+      clearTimer();
       state.current.timer = setTimeout(() => {
         fired.current = true;
         navigator.vibrate?.(12);
@@ -156,18 +161,13 @@ function useLongPress(onLongPress: () => void) {
     onPointerMove: (e: React.PointerEvent) => {
       if (!state.current.timer) return;
       if (Math.hypot(e.clientX - state.current.startX, e.clientY - state.current.startY) > 12) {
-        clearTimeout(state.current.timer);
-        state.current.timer = null;
+        clearTimer();
       }
     },
-    onPointerUp: () => {
-      if (state.current.timer) clearTimeout(state.current.timer);
-      state.current.timer = null;
-    },
-    onPointerLeave: () => {
-      if (state.current.timer) clearTimeout(state.current.timer);
-      state.current.timer = null;
-    },
+    onPointerUp: clearTimer,
+    onPointerLeave: clearTimer,
+    /** 触摸滚动被系统接管（如 WebView 滚动容器拦截）时取消挂起的长按 */
+    onPointerCancel: clearTimer,
     /** 长按已触发：click 应被抑制（打开会话） */
     suppressClick: () => fired.current,
   };
@@ -271,7 +271,8 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     };
   }, [refresh, fetchArchived]);
 
-  // 搜索：300ms debounce，空查询直接清空
+  // 搜索：300ms debounce + 序号守卫（旧请求迟到不覆盖新结果）
+  const searchSeqRef = useRef(0);
   useEffect(() => {
     if (searchTimerRef.current) {
       clearTimeout(searchTimerRef.current);
@@ -279,20 +280,24 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     }
     const q = searchQuery.trim();
     if (!q) {
+      searchSeqRef.current += 1; // 使 in-flight 旧请求作废
       setSearchResults([]);
       setSearching(false);
       return;
     }
+    const seq = ++searchSeqRef.current;
     setSearching(true);
     searchTimerRef.current = setTimeout(async () => {
       try {
         const results = await searchSessionsRest(q, 30);
+        if (seq !== searchSeqRef.current) return; // 已发出新查询，丢弃旧结果
         setSearchResults(results);
       } catch (err) {
+        if (seq !== searchSeqRef.current) return;
         setError(err instanceof Error ? err.message : String(err));
         setSearchResults([]);
       } finally {
-        setSearching(false);
+        if (seq === searchSeqRef.current) setSearching(false);
       }
     }, 300);
     return () => {
@@ -304,6 +309,14 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
   useEffect(() => {
     if (!multiMode) setSelected(new Set());
   }, [multiMode]);
+
+  /** 切换 tab：多选模式下清空选择（避免跨列表误操作） */
+  const switchTab = (key: TabKey) => {
+    if (multiMode) {
+      setSelected(new Set());
+    }
+    setActiveTab(key);
+  };
 
   const newChat = async () => {
     setError("");
@@ -403,16 +416,20 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     const ids = [...selected];
     if (ids.length === 0) return;
     setError("");
-    const done = await bulkArchiveSessionsRest(ids, archived);
-    if (done < ids.length) {
+    const { done, failedIds } = await bulkArchiveSessionsRest(ids, archived);
+    if (failedIds.length > 0) {
       setError(`部分归档失败（${done}/${ids.length}）`);
     }
+    // 只对成功项更新 UI（失败项保留在列表中，避免"幽灵消失"后被轮询拉回）
+    const succeeded = new Set(ids.filter((id) => !failedIds.includes(id)));
     if (archived) {
-      setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
-      setArchivedSessions((prev) => [...prev.filter((x) => !selected.has(x.id)), ...sessions.filter((x) => selected.has(x.id))]);
+      const moved = sessions.filter((x) => succeeded.has(x.id)).map((x) => ({ ...x, archived: true }));
+      setSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
+      setArchivedSessions((prev) => [...prev.filter((x) => !succeeded.has(x.id)), ...moved]);
     } else {
-      setArchivedSessions((prev) => prev.filter((x) => !selected.has(x.id)));
-      setSessions((prev) => [...prev.filter((x) => !selected.has(x.id)), ...archivedSessions.filter((x) => selected.has(x.id))]);
+      const moved = archivedSessions.filter((x) => succeeded.has(x.id)).map((x) => ({ ...x, archived: false }));
+      setArchivedSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
+      setSessions((prev) => [...prev.filter((x) => !succeeded.has(x.id)), ...moved]);
     }
     exitMultiMode();
   };
@@ -424,8 +441,10 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
     setError("");
     try {
       const { deleted } = await bulkDeleteSessionsRest(ids);
+      // 服务端对不存在的 id 静默跳过（可能已被其他端删除）——跳过项在服务端已不存在，
+      // 从 UI 移除同样正确；全部移除不会造成"幽灵消失"
       if (deleted < ids.length) {
-        setError(`部分删除失败（${deleted}/${ids.length}）`);
+        setError(`部分会话已被其他端删除（实际删除 ${deleted} 个）`);
       }
       setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
       setArchivedSessions((prev) => prev.filter((x) => !selected.has(x.id)));
@@ -448,6 +467,8 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
         multiMode={multiMode}
         selectedFlag={selectedFlag}
         busyPin={busyPin}
+        // 搜索结果行无 pinned 字段（服务端结构），隐藏星标避免状态误导
+        hideActions={searchActive}
         onOpen={() => onOpenSession(s.id, s.title ?? "")}
         onLongPress={() => setMenuFor(s)}
         onTogglePin={() => void togglePin(s)}
@@ -517,7 +538,7 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
             <button
               key={t.key}
               className={`tab ${activeTab === t.key ? "active" : ""}`}
-              onClick={() => setActiveTab(t.key)}
+              onClick={() => switchTab(t.key)}
             >
               {t.label}
               {t.key !== "archived" && <span className="tab-count">{counts[t.key]}</span>}
@@ -620,6 +641,8 @@ export default function SessionsPage({ gateway, onOpenSession, onLogout }: Props
                 setMenuFor(null);
                 void togglePin(target);
               }}
+              // 搜索结果行无 pinned 字段（服务端结构），隐藏置顶项避免标签误导
+              style={typeof menuFor.pinned !== "boolean" ? { display: "none" } : undefined}
             >
               {menuFor.pinned ? "★ 取消置顶" : "☆ 置顶"}
             </button>
@@ -706,6 +729,8 @@ interface SessionItemProps {
   multiMode: boolean;
   selectedFlag: boolean;
   busyPin: string | null;
+  /** 搜索模式：隐藏星标（搜索结果行无 pinned 字段） */
+  hideActions?: boolean;
   onOpen: () => void;
   onLongPress: () => void;
   onTogglePin: () => void;
@@ -718,6 +743,7 @@ function SessionItem({
   multiMode,
   selectedFlag,
   busyPin,
+  hideActions,
   onOpen,
   onLongPress,
   onTogglePin,
@@ -739,6 +765,7 @@ function SessionItem({
       onPointerMove={lp.onPointerMove}
       onPointerUp={lp.onPointerUp}
       onPointerLeave={lp.onPointerLeave}
+      onPointerCancel={lp.onPointerCancel}
       onContextMenu={(e) => {
         e.preventDefault(); // 屏蔽 WebView 系统长按菜单
         if (!multiMode) onLongPress();
@@ -756,7 +783,7 @@ function SessionItem({
       </div>
       <div className="session-side">
         <span className="session-time">{formatTime(s.last_active ?? s.started_at)}</span>
-        {!multiMode && (
+        {!multiMode && !hideActions && (
           <button
             className="icon-btn"
             disabled={busyPin === s.id}
@@ -766,6 +793,7 @@ function SessionItem({
               e.stopPropagation();
               onTogglePin();
             }}
+            onPointerDown={(e) => e.stopPropagation()} // 阻止长按冒泡到 li
           >
             {s.pinned ? "★" : "☆"}
           </button>
