@@ -227,7 +227,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         if (gateway.connectionState !== "open") {
           await gateway.connect();
         }
-        const list = await listSessionsRest({ limit: 200, order: "recent", archived: "exclude" });
+        const list = await listSessionsRest({ order: "recent", archived: "exclude" });
         setSessions(list);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));

@@ -193,9 +193,10 @@ export interface RestSession {
   [k: string]: unknown;
 }
 
-/** 拉取会话列表（REST，含 pinned 标记；source 可过滤） */
+/** 拉取会话列表（REST，含 pinned 标记；source 可过滤）。
+ *  服务端 GET /api/sessions 的 limit 上限 100（#39200 防全量拉取拖垮 SQLite），
+ *  此处按分页契约（limit/offset/total）循环拉全量，对调用方保持"一次返回完整列表"语义。 */
 export async function listSessionsRest(params: {
-  limit?: number;
   order?: "created" | "recent";
   source?: string;
   sources?: string;
@@ -203,16 +204,42 @@ export async function listSessionsRest(params: {
   /** 归档过滤：exclude（默认，隐藏归档）/ only（只看归档）/ include（全部） */
   archived?: "exclude" | "only" | "include";
 } = {}): Promise<RestSession[]> {
+  const PAGE = 100; // 服务端 Query(20, ge=0, le=100) 上限内的页大小
   const qs = new URLSearchParams();
-  qs.set("limit", String(params.limit ?? 200));
   qs.set("order", params.order ?? "recent");
   if (params.source) qs.set("source", params.source);
   if (params.sources) qs.set("sources", params.sources);
   if (params.exclude_sources) qs.set("exclude_sources", params.exclude_sources);
   qs.set("archived", params.archived ?? "exclude");
-  const { status, data } = await httpRequest(`/api/sessions?${qs.toString()}`);
-  if (status !== 200) throw new ApiError(`获取会话列表失败 (HTTP ${status})`, status);
-  return ((data as { sessions?: RestSession[] })?.sessions) ?? [];
+  const all: RestSession[] = [];
+  const seen = new Set<string>();
+  let offset = 0;
+  for (;;) {
+    qs.set("limit", String(PAGE));
+    qs.set("offset", String(offset));
+    const { status, data } = await httpRequest(`/api/sessions?${qs.toString()}`);
+    if (status !== 200) throw new ApiError(`获取会话列表失败 (HTTP ${status})`, status);
+    const body = (data ?? {}) as { sessions?: RestSession[]; total?: number };
+    const page = body.sessions ?? [];
+    for (const s of page) {
+      // 动态排序（order=recent）下分页窗口可能重复出现同一行，按 id 去重防虚增/重复渲染
+      if (seen.has(s.id)) continue;
+      seen.add(s.id);
+      all.push(s);
+    }
+    const total = body.total;
+    // 双保险终止：本页为空（已到底）或累计达服务端 total（权威计数）。
+    // 不用 page.length < PAGE：服务端若未来"钳制"limit（上限收紧后静默降行数），
+    // 满页恒不满 PAGE 会提前截断；空页判断在钳制下仍正确（代价：total 缺失时多 1 次空请求）。
+    if (page.length === 0 || (typeof total === "number" && all.length >= total)) break;
+    offset += PAGE;
+    // 防御上限：服务端异常（忽略 offset 恒返满页 / total 异常增长）时防无限请求
+    if (offset > 100_000) {
+      console.warn(`[listSessionsRest] 分页防御上限触发 offset=${offset}，返回 ${all.length} 条（服务端分页异常？）`);
+      break;
+    }
+  }
+  return all;
 }
 
 /** 搜索会话（REST FTS；结果结构为 {results: [...]}，形状与列表行一致） */

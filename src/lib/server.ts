@@ -58,8 +58,16 @@ export function restUrl(path: string): string {
   return `${getBaseUrl()}${path}`;
 }
 
-/** 由 base URL 构造 WS 地址（http→ws, https→wss） */
+/** 由 base URL 构造 WS 地址（http→ws, https→wss）。
+ *  Web 模式走当前页面 origin：浏览器/vite 同源架构下 /api/ws 由 proxy（dev）或同源站点
+ *  （生产 server.url）转发到后端，不依赖 localStorage baseUrl——Web 登录探测经相对路径
+ *  "假成功"可能把 baseUrl 存成 https://IP:9119（9119 无 TLS），直接派生会拼出 wss:// 连不上。
+ *  原生模式（CapacitorHttp 真实探测过的 baseUrl）保持原逻辑。 */
 export function wsUrl(path: string): string {
+  if (!isNative()) {
+    const proto = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${location.host}${path}`;
+  }
   const base = getBaseUrl();
   const proto = base.startsWith("https") ? "wss" : "ws";
   return `${proto}://${base.replace(/^https?:\/\//i, "")}${path}`;
