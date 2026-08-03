@@ -1,4 +1,4 @@
-package com.yangyu.hermesmobile;
+package com.hermesmobile.app;
 
 import com.getcapacitor.BridgeActivity;
 
