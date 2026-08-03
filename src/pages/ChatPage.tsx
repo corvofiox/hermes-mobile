@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
-import type { GatewayEvent, HermesGateway } from "../lib/gateway";
+import type { GatewayEvent, HermesGateway, HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
 
@@ -25,6 +25,8 @@ interface Msg {
   images?: string[];
   /** 用户发送的文件（名称展示） */
   files?: { name: string; size: number }[];
+  /** 服务端 DB row id（跨端同步去重锚点；自己发送的消息在轮询确认前为空） */
+  serviceId?: number;
 }
 
 interface ToolActivity {
@@ -61,6 +63,44 @@ const MAX_FILE_BYTES = 256 * 1024 * 1024;
 function closeUnclosedFence(text: string): string {
   const opens = (text.match(/```/g) ?? []).length;
   return opens % 2 === 1 ? `${text}\n\`\`\`` : text;
+}
+
+/**
+ * 跨端同步合并：远端 resume 消息与本地的增量合并。
+ * 策略：按服务端 row id 去重——远端未匹配消息 = [本地未确认消息(自己的) N 条] + [真正新增 M 条]（id 时间序）。
+ * 前 N 条只更新本地消息的 serviceId（防重复追加），后 M 条追加为新消息。
+ * 交错场景（10s 窗口双方各发多条）下可能延迟一轮，最终一致（误追加的带 id 不会二次追加，漏掉的下一轮补上）。
+ */
+function mergeSync(local: Msg[], remote: HistoryMessage[], nextId: () => number): Msg[] {
+  const rm = remote.filter((m) => m.role === "user" || m.role === "assistant");
+  const remoteIds = new Set(rm.map((m) => m.id).filter((v): v is number => typeof v === "number"));
+  if (remoteIds.size === 0) return local; // 无 id 可用（旧服务端），保守跳过
+  const localIds = new Set(local.map((m) => m.serviceId).filter((v): v is number => typeof v === "number"));
+  const unmatched = rm.filter((r) => !(typeof r.id === "number" && localIds.has(r.id)));
+  if (unmatched.length === 0) return local;
+  const pendingCount = local.filter((m) => !m.serviceId).length;
+  const selfMatches = unmatched.slice(0, pendingCount);
+  const added = unmatched
+    .slice(pendingCount)
+    .map((r) => ({
+      id: nextId(),
+      role: r.role as "user" | "assistant",
+      text: String(r.text ?? r.content ?? ""),
+      serviceId: typeof r.id === "number" ? r.id : undefined,
+    }));
+  if (added.length === 0 && selfMatches.length === 0) return local;
+  // 本地未确认消息按序匹配远端消息，补 serviceId（防下次轮询重复追加）
+  let idx = 0;
+  const updated = local.map((m) => {
+    if (m.serviceId) return m;
+    const match = selfMatches[idx];
+    if (match && match.role === m.role) {
+      idx++;
+      return { ...m, serviceId: typeof match.id === "number" ? match.id : undefined };
+    }
+    return m;
+  });
+  return added.length > 0 ? [...updated, ...added] : updated;
 }
 
 /** 代码块：复制按钮 + 等宽渲染 */
@@ -135,6 +175,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   /** 发送 in-flight 守卫（busy state 异步更新，防连按双发） */
   const sendLockRef = useRef(false);
+  /** busy 的 ref 同步副本（轮询同步判断用；state 更新异步） */
+  const busyRef = useRef(false);
+  const setBusyBoth = (v: boolean) => {
+    busyRef.current = v;
+    setBusy(v);
+  };
   /** 语音启动 in-flight 守卫（listening state 异步更新，防连点交错 start） */
   const voiceStartLockRef = useRef(false);
   /** live session_id（resume/create 响应的 session_id），事件过滤/发送/interrupt 都用它 */
@@ -221,7 +267,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       });
       setTool(null);
       setStatus("");
-      setBusy(false);
+      setBusyBoth(false);
     });
     const offToolStart = gateway.on("tool.start", (ev) => {
       if (!isForThisSession(ev)) return;
@@ -243,7 +289,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (!isForThisSession(ev)) return;
       const payload = ev.payload as { message?: string } | undefined;
       setStatus(payload?.message ?? "出错了");
-      setBusy(false);
+      setBusyBoth(false);
     });
     return () => {
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
@@ -298,19 +344,20 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             id: nextId(),
             role: m.role as "user" | "assistant",
             text,
+            serviceId: typeof m.id === "number" ? m.id : undefined,
             ...(files.length > 0 ? { files } : {}),
           };
         });
       // 断线重连恢复：会话仍在运行则进入 busy，并用 inflight 快照初始化末条消息；
       // 否则必须复位 busy/tool/status（旧 complete 帧可能丢在断掉的 transport 上，永远等不到）
       if (resumed.running) {
-        setBusy(true);
+        setBusyBoth(true);
         const inflight = resumed.inflight;
         if (inflight?.assistant && inflight.streaming) {
           msgs.push({ id: nextId(), role: "assistant", text: inflight.assistant, streaming: true });
         }
       } else {
-        setBusy(false);
+        setBusyBoth(false);
         setTool(null);
         setStatus("");
       }
@@ -322,7 +369,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (resumeSucceededRef.current && /not found|4007/i.test(msg)) {
         liveSessionIdRef.current = null;
         setLiveReady(false);
-        setBusy(false);
+        setBusyBoth(false);
         setTool(null);
         setStatus("会话已过期（未发送过消息的新会话重连后需重新创建）");
       } else {
@@ -363,6 +410,32 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     });
     return off;
   }, [gateway, doResume]);
+
+  // 跨端消息同步轮询：每 10s 静默 resume 拉取远端新增消息（如 PC 端发送的），增量合并。
+  // 暂停条件：页面不可见 / 本端 busy（自己收流中，事件已实时）/ resume 进行中 / 新会话（无历史可同步）
+  useEffect(() => {
+    if (sessionLiveId) return; // 新建会话：live id 直接可用，无跨端历史
+    const poll = async () => {
+      if (document.visibilityState !== "visible") return;
+      if (busyRef.current || resumingRef.current) return;
+      const liveId = liveSessionIdRef.current;
+      if (!liveId) return;
+      try {
+        const resumed = await gateway.resumeSession(sessionId);
+        if (!mountedRef.current) return;
+        // 服务端可能轮换 live id（压缩/续接后），更新本地锚点
+        if (resumed.session_id && resumed.session_id !== liveSessionIdRef.current) {
+          liveSessionIdRef.current = resumed.session_id;
+        }
+        const remote = Array.isArray(resumed.messages) ? resumed.messages : [];
+        setMessages((prev) => mergeSync(prev, remote, nextId));
+      } catch {
+        // 静默：轮询失败不影响主流程（下轮重试）
+      }
+    };
+    const id = setInterval(poll, 10_000);
+    return () => clearInterval(id);
+  }, [gateway, sessionId, sessionLiveId]);
 
   // 自动滚底：仅当用户位于底部附近（<100px）时跟随
   useEffect(() => {
@@ -436,12 +509,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     setPendingFiles([]);
     const newId = nextId();
     setMessages((prev) => [...prev, { id: newId, role: "user", text, images: imageDataUrls, files: fileInfos }]);
-    setBusy(true);
+    setBusyBoth(true);
     try {
       await gateway.submitPrompt(liveSessionIdRef.current, promptText);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
-      setBusy(false);
+      setBusyBoth(false);
       // 发送失败：恢复待发送附件（服务端已 attach 的文件/图片，重发用同一引用不会重复写入），
       // 消息标记 error 供用户一键重发
       setPendingImages((prev) => [
