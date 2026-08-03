@@ -1407,8 +1407,8 @@ button {
   gap: 6px;
   overflow-x: auto;
   flex-shrink: 0;
-  /* 独立栏位：浅色底 + 分隔线，与附件栏/输入栏明确分区 */
-  background: rgba(16, 49, 63, 0.03);
+  /* 独立栏位：浅色底 + 分隔线，与附件栏/输入栏明确分区（随主题 ink 变量） */
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
   border-radius: 10px;
   padding: 5px 8px;
 }
@@ -1548,10 +1548,10 @@ button {
 
 /* 发送⇄停止切换：运行中停止态（红色警示，始终可点） */
 .send-btn.btn-stop {
-  background: #d64545;
+  background: var(--danger);
   color: #fff;
   border-color: transparent;
 }
 .send-btn.btn-stop:active {
-  background: #b93a3a;
+  filter: brightness(0.88);
 }
