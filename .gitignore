@@ -10,3 +10,6 @@ android/local.properties
 tsconfig.tsbuildinfo
 .cache/
 dist-apk/
+.env
+.env.*
+!.env.example

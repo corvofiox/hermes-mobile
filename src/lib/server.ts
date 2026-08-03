@@ -13,8 +13,8 @@ export function isNative(): boolean {
 export function getBaseUrl(): string {
   const stored = localStorage.getItem(BASE_URL_KEY);
   if (stored) return stored.replace(/\/+$/, "");
-  // 默认值：内网 Hermes 后端
-  return "http://192.168.10.10:9119";
+  // 无默认地址：首次使用由用户在登录页填写（公共构建不含内网地址）
+  return "";
 }
 
 export function setBaseUrl(url: string): void {
@@ -35,7 +35,7 @@ export function normalizeBaseUrl(input: string): string {
  * - 带端口 → 使用用户指定端口
  * - 已带协议 → 单元素 [原样]（无端口同样补 9119）
  * - 无协议 → 先 https 后 http（Hermes 9119 优先 https，失败回退 http）
- * 支持路径前缀（如 192.168.10.10:9119/hermes）
+ * 支持路径前缀（如 host:9119/hermes）
  */
 export function baseCandidates(input: string): string[] {
   let v = input.trim().replace(/\/+$/, "");

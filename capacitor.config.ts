@@ -10,7 +10,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
  * - 明文 HTTP（内网场景）：usesCleartextTraffic=true 已在 AndroidManifest 配置
  */
 const config: CapacitorConfig = {
-  appId: "com.yangyu.hermesmobile",
+  appId: "com.hermesmobile.app",
   appName: "Hermes Mobile",
   webDir: "dist",
   android: {

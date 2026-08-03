@@ -6,7 +6,7 @@ import react from "@vitejs/plugin-react";
 // 使浏览器看到的是同源页面 —— 与服务端 CORS 白名单（仅 localhost）兼容。
 // 生产模式：前端静态文件由 NAS 同源提供（Capacitor server.url 模式），无需代理。
 
-const HERMES_BACKEND = process.env.HERMES_BACKEND ?? "http://192.168.10.10:9119";
+const HERMES_BACKEND = process.env.HERMES_BACKEND ?? "http://localhost:9119";
 
 export default defineConfig({
   plugins: [react()],
