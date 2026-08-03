@@ -248,6 +248,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  position: relative; /* 供 topbar-title 绝对居中（chat 页移除停止按钮后标题不再右移） */
   padding: 14px 16px;
   padding-top: calc(14px + env(safe-area-inset-top, 0px));
   padding-left: calc(16px + env(safe-area-inset-left, 0px));
@@ -538,6 +539,10 @@ button {
   font-size: 15px;
   font-weight: 600;
   max-width: 50%;
+  /* 绝对居中：chat 页 header 只有返回+标题，space-between 会把标题推右 */
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 /* 顶栏标题（可点击重命名） */
