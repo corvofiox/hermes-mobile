@@ -30,8 +30,6 @@ export interface HistoryMessage {
   role: "user" | "assistant" | "system" | "tool";
   text?: string;
   content?: string;
-  /** 服务端 DB row id（resume 时 include_row_ids=True，单调递增；用于跨端增量同步） */
-  id?: number;
   [k: string]: unknown;
 }
 
