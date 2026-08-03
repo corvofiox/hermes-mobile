@@ -733,9 +733,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           </button>
           <span className={`conn-dot ${connDotCls}`} title={connDotTitle} />
         </div>
-        <button className="btn" onClick={stop} disabled={!busy || !liveReady}>
-          停止
-        </button>
+        {/* 停止按钮已合并进发送位置（运行时发送⇄停止切换），header 只留返回+标题 */}
       </header>
 
       <div className="chat-body" ref={chatBodyRef}>
@@ -965,16 +963,17 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             {listening ? "■" : "🎤"}
           </button>
           <button
-            className="btn btn-primary send-btn"
-            onClick={send}
+            className={`btn send-btn${busy ? " btn-stop" : " btn-primary"}`}
+            onClick={busy ? () => void stop() : send}
             disabled={
-              busy ||
-              (!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0) ||
-              !liveReady ||
-              resumingRef.current
+              busy
+                ? false // 运行中：停止始终可点
+                : (!input.trim() && pendingImages.length === 0 && pendingFiles.length === 0) ||
+                  !liveReady ||
+                  resumingRef.current
             }
           >
-            发送
+            {busy ? "⏹ 停止" : "发送"}
           </button>
         </div>
       </footer>
