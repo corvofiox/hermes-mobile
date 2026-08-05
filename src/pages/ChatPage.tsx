@@ -278,7 +278,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             error: payload?.status === "error",
           };
         } else if (payload?.text) {
-          // 无 streaming 消息（如极短回复）也补一条，不静默丢弃
+          // 无 streaming 消息（如极短回复）也补一条，不静默丢弃。
+          // 去重：与最后一条已完成 assistant 消息文本相同 → 跳过
+          // （息屏/断线重连后迟到的 complete 与 resume 历史重复，防同一条回复渲染两次）
+          const prevLast = copy[copy.length - 1];
+          if (
+            prevLast &&
+            prevLast.role === "assistant" &&
+            !prevLast.streaming &&
+            prevLast.text === payload.text
+          ) {
+            return prev;
+          }
           copy.push({
             id: newId,
             role: "assistant",
@@ -377,7 +388,11 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         setBusy(true);
         const inflight = resumed.inflight;
         if (inflight?.assistant && inflight.streaming) {
-          msgs.push({ id: nextId(), role: "assistant", text: inflight.assistant, streaming: true });
+          // 去重：history 最后一条已是同一回复（部分文本）则不重复 push
+          const lastHist = msgs[msgs.length - 1];
+          if (!(lastHist && lastHist.role === "assistant" && lastHist.text === inflight.assistant)) {
+            msgs.push({ id: nextId(), role: "assistant", text: inflight.assistant, streaming: true });
+          }
         }
       } else {
         setBusy(false);
