@@ -432,7 +432,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     const promptText = [text, imageText, ...fileText].filter(Boolean).join("\n");
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
     const fileInfos = pendingFiles.map((f) => {
-      const path = f.refText.replace(/^@file:/, "").trim();
+      // 剥引号：服务端对含空格/特殊字符路径的引用加引号（_format_ref_value），与 resume 解析一致
+      const path = f.refText.replace(/^@file:/, "").replace(/^["'`]|["'`]$/g, "").trim();
       return { name: f.name, size: f.size, path: path || undefined };
     });
     setInput("");
@@ -716,37 +717,20 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
-  /** 下载文件（历史附件）：原生=files/read→写缓存→系统分享；Web=a 标签触发 download 端点 */
+  /** 下载 in-flight 守卫（防连点双份拉取/双份分享面板） */
+  const downloadLockRef = useRef(false);
+
+  /** 下载文件（历史附件）：原生=files/read→写缓存→系统分享；Web=直接触发 download 端点 */
   const downloadFile = async (file: { name: string; path?: string }) => {
     if (!file.path) {
       setStatus("该文件无下载路径（本次会话附件）");
       return;
     }
+    if (downloadLockRef.current) return;
+    downloadLockRef.current = true;
     try {
-      const res = await downloadFileRest(file.path);
-      if (!res.ok || !res.data_url) {
-        setStatus(res.detail ?? "文件下载失败");
-        return;
-      }
-      if (isNative()) {
-        // 原生：data_url → 写 App 缓存目录 → 系统分享（保存到任意位置）
-        const { Filesystem, Directory } = await import("@capacitor/filesystem");
-        const { Share } = await import("@capacitor/share");
-        const base64 = res.data_url.split(",")[1] ?? "";
-        const safeName = (file.name || "download").replace(/[\\/:*?"<>|]/g, "_");
-        const uri = await Filesystem.writeFile({
-          path: safeName,
-          data: base64,
-          directory: Directory.Cache,
-        });
-        await Share.share({
-          title: file.name,
-          url: uri.uri,
-          dialogTitle: "保存/分享文件",
-        });
-        setStatus(`已读取 ${file.name}（${((res.size ?? 0) / 1024).toFixed(1)} KB）`);
-      } else {
-        // Web：同源代理 download 端点（浏览器原生下载）
+      if (!isNative()) {
+        // Web：直接触发 download 端点（避免先拉 data_url 双倍传输）
         const qs = new URLSearchParams();
         qs.set("path", file.path);
         const a = document.createElement("a");
@@ -756,9 +740,40 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         a.click();
         a.remove();
         setStatus(`开始下载 ${file.name}`);
+        return;
+      }
+      const res = await downloadFileRest(file.path);
+      if (!res.ok || !res.data_url) {
+        setStatus(res.detail ?? "文件下载失败");
+        return;
+      }
+      // 原生：data_url → 写 App 缓存目录 → 系统分享（保存到任意位置）
+      const { Filesystem, Directory } = await import("@capacitor/filesystem");
+      const { Share } = await import("@capacitor/share");
+      const base64 = res.data_url.split(",")[1] ?? "";
+      const safeName = (file.name || "download").replace(/[\\/:*?"<>|]/g, "_");
+      const uri = await Filesystem.writeFile({
+        path: safeName,
+        data: base64,
+        directory: Directory.Cache,
+      });
+      try {
+        await Share.share({
+          title: file.name,
+          url: uri.uri,
+          dialogTitle: "保存/分享文件",
+        });
+        setStatus(`已准备 ${file.name}（${formatSize(res.size ?? 0)}），请在面板选择保存位置`);
+      } catch (shareErr) {
+        // 用户取消分享面板不是错误
+        if (!/cancel/i.test(String(shareErr))) {
+          setStatus(`分享失败：${shareErr instanceof Error ? shareErr.message : String(shareErr)}`);
+        }
       }
     } catch (err) {
       setStatus(`下载失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      downloadLockRef.current = false;
     }
   };
 
