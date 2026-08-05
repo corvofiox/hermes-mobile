@@ -748,10 +748,10 @@ function SessionItem({
       )}
       <div className="session-main">
         <div className="session-title">
-          {s.title || "（无标题）"}
+          {/* 标题显示最新对话（服务端 preview=最后消息预览）；无消息会话回退原标题 */}
+          {s.preview || s.title || "（无标题）"}
           {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
         </div>
-        <div className="session-preview">{s.preview || "—"}</div>
       </div>
       <div className="session-side">
         <span className="session-time">{formatTime(s.last_active ?? s.started_at)}</span>
