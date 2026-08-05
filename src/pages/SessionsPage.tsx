@@ -223,6 +223,15 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
 
   // 全部分组 + 各 tab 数量
   const groups = useMemo(() => groupSessions(sessions), [sessions]);
+  // 一次性读入本地最后消息记录（避免渲染期每项同步读 localStorage）
+  const lastMsgs = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const s of sessions) {
+      const v = getLastMessage(s.id);
+      if (v) map[s.id] = v;
+    }
+    return map;
+  }, [sessions]);
   const counts = useMemo(() => {
     const c: Record<TabKey, number> = { all: sessions.length, pinned: 0, platform: 0, cron: 0, other: 0 };
     for (const s of sessions) c[classifySession(s)]++;
@@ -459,6 +468,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         multiMode={multiMode}
         selectedFlag={selectedFlag}
         busyPin={busyPin}
+        lastMsg={lastMsgs[s.id]}
         // 搜索结果行无 pinned 字段（服务端结构），隐藏星标避免状态误导
         hideActions={searchActive}
         onOpen={() => onOpenSession(s.id, s.title ?? "")}
@@ -721,6 +731,8 @@ interface SessionItemProps {
   multiMode: boolean;
   selectedFlag: boolean;
   busyPin: string | null;
+  /** 本地记录的最后消息（标题显示最新对话） */
+  lastMsg?: string;
   /** 搜索模式：隐藏星标（搜索结果行无 pinned 字段） */
   hideActions?: boolean;
   onOpen: () => void;
@@ -735,6 +747,7 @@ function SessionItem({
   multiMode,
   selectedFlag,
   busyPin,
+  lastMsg,
   hideActions,
   onOpen,
   onLongPress,
@@ -768,8 +781,8 @@ function SessionItem({
       )}
       <div className="session-main">
         <div className="session-title">
-          {/* 标题显示最新对话：本地记录的最后消息优先；无记录（未在本机打开过的会话）回退原标题 */}
-          {getLastMessage(s.id) || s.title || "（无标题）"}
+          {/* 标题显示最新对话：本地记录的最后消息优先；无记录回退原标题（preview=首条消息仅兜底） */}
+          {lastMsg || s.title || s.preview || "（无标题）"}
           {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
         </div>
       </div>
