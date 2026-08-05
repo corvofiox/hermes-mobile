@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { downloadFileRest, getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
-import { isNative, restUrl } from "../lib/server";
+import { isNative } from "../lib/server";
 import { SYSTEM_DISPLAY_KINDS, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
@@ -69,9 +69,12 @@ const MEDIA_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
 
 /**
  * Extract MEDIA:<path> markers from message text (agent-generated images/files).
- * Desktop-compatible parsing: tolerates emphasis/backtick/quote wrapping and
- * trailing punctuation; splits by extension. Images -> preview, others -> file cards.
- * Incomplete streaming paths (no full extension) won't match image branch.
+ * Aligns with desktop server regex (gateway/platforms/base.py MEDIA_TAG_CLEANUP_RE):
+ * tolerates emphasis/backtick/quote wrapping (models routinely emit **MEDIA:/x.png**),
+ * non-greedy path capture + boundary lookahead (no glued-tag swallowing), trailing
+ * punctuation/wrappers stripped before extension split.
+ * Images -> preview, others -> file cards. Incomplete streaming paths won't match
+ * the image branch (extension anchor), so no 404 flicker.
  */
 function extractMedia(text: string): {
   text: string;
@@ -80,9 +83,11 @@ function extractMedia(text: string): {
 } {
   const images: string[] = [];
   const files: { path: string; name: string }[] = [];
+  const MEDIA_RE =
+    /[*_`"'\\]{0,3}MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+?))(?=[\s`"'*_,;:)\]\[}]|MEDIA:|\.(?:\s|$)|$)/g;
   const cleaned = text
-    .replace(/MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+))/g, (_m, a: string, b: string, c: string, d: string) => {
-      const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[.,;:!?，。；：！？]+$/, "");
+    .replace(MEDIA_RE, (_m, a: string, b: string, c: string, d: string) => {
+      const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[*_`"'),.;:!?，。；：！？]+$/, "");
       if (!path) return "";
       const ext = path.split(".").pop()?.toLowerCase() ?? "";
       if (MEDIA_IMAGE_EXTS.has(ext)) images.push(path);
