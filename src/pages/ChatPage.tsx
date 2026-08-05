@@ -84,13 +84,13 @@ function extractMedia(text: string): {
   const images: string[] = [];
   const files: { path: string; name: string }[] = [];
   const MEDIA_RE =
-    /[*_`"'\\]{0,3}MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+?))(?=[\s`"'*_,;:)\]\[}]|MEDIA:|\.(?:\s|$)|$)/g;
+    /[*_`"'\\]{0,3}MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+?))(?=[\s`"'*,;:)\]\[}]|MEDIA:|\.(?:\s|$)|$)/g;
   const cleaned = text
     .replace(MEDIA_RE, (_m, a: string, b: string, c: string, d: string) => {
       const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[*_`"'),.;:!?，。；：！？]+$/, "");
       if (!path) return "";
       const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      if (MEDIA_IMAGE_EXTS.has(ext)) {
+      if (path.startsWith("/") && MEDIA_IMAGE_EXTS.has(ext)) {
         images.push(path);
         return "";
       }
