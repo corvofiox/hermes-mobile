@@ -64,25 +64,59 @@ function closeUnclosedFence(text: string): string {
   return opens % 2 === 1 ? `${text}\n\`\`\`` : text;
 }
 
-/** 服务端文件路径 → 可访问的 REST 图片 URL（cookie 鉴权，托管根内） */
-function mediaToUrl(path: string): string {
-  if (/^https?:\/\//i.test(path)) return path;
-  return `${restUrl("/api/files/read")}?path=${encodeURIComponent(path)}`;
-}
+/** 服务端文件路径 → 数据（经 httpRequest 双路径鉴权）；供 MediaImage 组件使用 */
+const MEDIA_IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
 
 /**
- * 提取消息文本中的 MEDIA:<path> 标记（agent 生成的图片/文件引用）→ 图片 URL 列表。
- * 桌面端原生渲染 MEDIA:，移动端需转 REST 图片地址。
+ * Extract MEDIA:<path> markers from message text (agent-generated images/files).
+ * Desktop-compatible parsing: tolerates emphasis/backtick/quote wrapping and
+ * trailing punctuation; splits by extension. Images -> preview, others -> file cards.
+ * Incomplete streaming paths (no full extension) won't match image branch.
  */
-function extractMedia(text: string): { text: string; media: string[] } {
-  const media: string[] = [];
+function extractMedia(text: string): {
+  text: string;
+  images: string[];
+  files: { path: string; name: string }[];
+} {
+  const images: string[] = [];
+  const files: { path: string; name: string }[] = [];
   const cleaned = text
-    .replace(/MEDIA:([^\s\n]+)/g, (_m, p: string) => {
-      media.push(mediaToUrl(p.trim()));
+    .replace(/MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+))/g, (_m, a: string, b: string, c: string, d: string) => {
+      const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[.,;:!?，。；：！？]+$/, "");
+      if (!path) return "";
+      const ext = path.split(".").pop()?.toLowerCase() ?? "";
+      if (MEDIA_IMAGE_EXTS.has(ext)) images.push(path);
+      else files.push({ path, name: path.split("/").pop() ?? path });
       return "";
     })
     .trim();
-  return { text: cleaned, media };
+  return { text: cleaned, images, files };
+}
+
+/** 异步加载服务端图片（httpRequest 双路径带 cookie → data_url 渲染）；loading/error 降级 */
+function MediaImage({ path, onClick }: { path: string; onClick?: (src: string) => void }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(null);
+    setFailed(false);
+    downloadFileRest(path)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok && res.data_url) setSrc(res.data_url);
+        else setFailed(true);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+  if (failed) return <div className="msg-media-failed">图片加载失败</div>;
+  if (!src) return <div className="msg-media-loading"><div className="spinner spinner-sm" /></div>;
+  return <img src={src} className="msg-media-img" alt="生成的图片" onClick={() => onClick?.(src)} />;
 }
 
 /** 代码块：复制按钮 + 等宽渲染 */
@@ -900,19 +934,31 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             ) : (
               <div className="bubble assistant-bubble">
                 {(() => {
-                  const { text: displayText, media } = extractMedia(m.streaming ? closeUnclosedFence(m.text) : m.text);
+                  const { text: displayText, images, files: mediaFiles } = extractMedia(
+                    m.streaming ? closeUnclosedFence(m.text) : m.text,
+                  );
                   return (
                     <>
-                      {media.length > 0 && (
+                      {images.length > 0 && (
                         <div className="msg-media">
-                          {media.map((src, i) => (
-                            <img
+                          {images.map((path, i) => (
+                            <MediaImage key={i} path={path} onClick={(src) => setPreviewImg(src)} />
+                          ))}
+                        </div>
+                      )}
+                      {mediaFiles.length > 0 && (
+                        <div className="msg-files">
+                          {mediaFiles.map((f, i) => (
+                            <div
                               key={i}
-                              src={src}
-                              className="msg-media-img"
-                              alt="生成的图片"
-                              onClick={() => setPreviewImg(src)}
-                            />
+                              className="msg-file clickable"
+                              onClick={() => void downloadFile(f)}
+                              title={`点击下载 ${f.name}`}
+                            >
+                              <span className="msg-file-icon">📄</span>
+                              <span className="msg-file-name">{f.name}</span>
+                              <span className="msg-file-dl">⬇</span>
+                            </div>
                           ))}
                         </div>
                       )}
