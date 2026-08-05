@@ -45,6 +45,28 @@ export const SYSTEM_DISPLAY_KINDS = new Set([
   "system_note",
 ]);
 
+/**
+ * 服务端合成 user 消息前缀（agent/conversation_compression.py _SYNTHETIC_USER_PREFIXES）：
+ * 后台进程通知/压缩提示等无 display_kind，按内容前缀兜底过滤。
+ */
+export const SYNTHETIC_USER_PREFIXES = [
+  "[System: Your previous response was truncated",
+  "[System: The previous response was cut off",
+  "[System: Your previous tool call",
+  "[Your active task list was preserved across context compression]",
+  "[IMPORTANT: Background process ",
+];
+
+/** 判断是否为系统/合成消息（display_kind 命中或合成前缀命中） */
+export function isSystemMessage(m: HistoryMessage): boolean {
+  if (m.display_kind && SYSTEM_DISPLAY_KINDS.has(m.display_kind)) return true;
+  if (m.role === "user") {
+    const text = String(m.text ?? m.content ?? "");
+    return SYNTHETIC_USER_PREFIXES.some((p) => text.startsWith(p));
+  }
+  return false;
+}
+
 /** 服务端 session.resume 返回（methods_session.py 实际结构，无顶层 title） */
 export interface ResumeSessionResult {
   /** live session id —— prompt.submit / 事件过滤都用它 */

@@ -3,7 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { downloadFileRest, getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
 import { isNative } from "../lib/server";
-import { SYSTEM_DISPLAY_KINDS, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
+import { isSystemMessage, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
 
@@ -90,9 +90,17 @@ function extractMedia(text: string): {
       const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[*_`"'),.;:!?，。；：！？]+$/, "");
       if (!path) return "";
       const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      if (MEDIA_IMAGE_EXTS.has(ext)) images.push(path);
-      else files.push({ path, name: path.split("/").pop() ?? path });
-      return "";
+      if (MEDIA_IMAGE_EXTS.has(ext)) {
+        images.push(path);
+        return "";
+      }
+      // 文件分支锚定：仅绝对路径（/ 开头）且带扩展名的真实引用建卡片；
+      // 正文里的 MEDIA: 字面示例（相对路径/无扩展名）保留原文，避免假卡片
+      if (path.startsWith("/") && ext) {
+        files.push({ path, name: path.split("/").pop() ?? path });
+        return "";
+      }
+      return _m;
     })
     .trim();
   return { text: cleaned, images, files };
@@ -340,12 +348,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setLiveReady(true); // resume 完成解禁按钮（触发 re-render）
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
-        // 过滤系统类消息（后台任务返回/定时激活提示/隐藏标记）与 tool 消息
-        .filter(
-          (m) =>
-            (m.role === "user" || m.role === "assistant") &&
-            !(m.display_kind && SYSTEM_DISPLAY_KINDS.has(m.display_kind)),
-        )
+        // 过滤系统/合成消息（后台任务返回/定时激活提示/合成前缀兜底）与 tool 消息
+        .filter((m) => (m.role === "user" || m.role === "assistant") && !isSystemMessage(m))
         .map((m) => {
           const raw = String(m.text ?? m.content ?? "");
           // 历史消息中的 @file: 引用还原为文件卡片。
