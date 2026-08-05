@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { downloadFileRest, getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
-import { isNative } from "../lib/server";
-import type { GatewayEvent, HermesGateway } from "../lib/gateway";
+import { isNative, restUrl } from "../lib/server";
+import { SYSTEM_DISPLAY_KINDS, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
 
@@ -62,6 +62,27 @@ const MAX_FILE_BYTES = 256 * 1024 * 1024;
 function closeUnclosedFence(text: string): string {
   const opens = (text.match(/```/g) ?? []).length;
   return opens % 2 === 1 ? `${text}\n\`\`\`` : text;
+}
+
+/** 服务端文件路径 → 可访问的 REST 图片 URL（cookie 鉴权，托管根内） */
+function mediaToUrl(path: string): string {
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${restUrl("/api/files/read")}?path=${encodeURIComponent(path)}`;
+}
+
+/**
+ * 提取消息文本中的 MEDIA:<path> 标记（agent 生成的图片/文件引用）→ 图片 URL 列表。
+ * 桌面端原生渲染 MEDIA:，移动端需转 REST 图片地址。
+ */
+function extractMedia(text: string): { text: string; media: string[] } {
+  const media: string[] = [];
+  const cleaned = text
+    .replace(/MEDIA:([^\s\n]+)/g, (_m, p: string) => {
+      media.push(mediaToUrl(p.trim()));
+      return "";
+    })
+    .trim();
+  return { text: cleaned, media };
 }
 
 /** 代码块：复制按钮 + 等宽渲染 */
@@ -280,7 +301,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setLiveReady(true); // resume 完成解禁按钮（触发 re-render）
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
-        .filter((m) => m.role === "user" || m.role === "assistant")
+        // 过滤系统类消息（后台任务返回/定时激活提示/隐藏标记）与 tool 消息
+        .filter(
+          (m) =>
+            (m.role === "user" || m.role === "assistant") &&
+            !(m.display_kind && SYSTEM_DISPLAY_KINDS.has(m.display_kind)),
+        )
         .map((m) => {
           const raw = String(m.text ?? m.content ?? "");
           // 历史消息中的 @file: 引用还原为文件卡片。
@@ -873,28 +899,48 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
               </div>
             ) : (
               <div className="bubble assistant-bubble">
-                <div className="markdown-body">
-                  <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    components={{
-                      pre: CodeBlock,
-                      img: ({ src, alt }) => (
-                        <img
-                          src={src}
-                          alt={alt ?? ""}
-                          className="md-image"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (src) setPreviewImg(src);
+                {(() => {
+                  const { text: displayText, media } = extractMedia(m.streaming ? closeUnclosedFence(m.text) : m.text);
+                  return (
+                    <>
+                      {media.length > 0 && (
+                        <div className="msg-media">
+                          {media.map((src, i) => (
+                            <img
+                              key={i}
+                              src={src}
+                              className="msg-media-img"
+                              alt="生成的图片"
+                              onClick={() => setPreviewImg(src)}
+                            />
+                          ))}
+                        </div>
+                      )}
+                      <div className="markdown-body">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            pre: CodeBlock,
+                            img: ({ src, alt }) => (
+                              <img
+                                src={src}
+                                alt={alt ?? ""}
+                                className="md-image"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (src) setPreviewImg(src);
+                                }}
+                              />
+                            ),
                           }}
-                        />
-                      ),
-                    }}
-                  >
-                    {m.streaming ? closeUnclosedFence(m.text) : m.text}
-                  </ReactMarkdown>
-                </div>
-                {m.streaming && <span className="cursor" />}
+                        >
+                          {displayText}
+                        </ReactMarkdown>
+                      </div>
+                      {m.streaming && <span className="cursor" />}
+                    </>
+                  );
+                })()}
               </div>
             )}
           </div>

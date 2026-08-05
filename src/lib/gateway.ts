@@ -30,8 +30,22 @@ export interface HistoryMessage {
   role: "user" | "assistant" | "system" | "tool";
   text?: string;
   content?: string;
+  /** 服务端 DB row id（resume 时 include_row_ids=True） */
+  id?: number;
+  /** 服务端显示分类（hidden/async_delegation_complete/auto_continue 等系统类需过滤） */
+  display_kind?: string;
   [k: string]: unknown;
 }
+
+/** 系统类 display_kind：模型运行时元数据，任何客户端都不应渲染为用户气泡 */
+export const SYSTEM_DISPLAY_KINDS = new Set([
+  "hidden",
+  "model_switch",
+  "async_delegation_complete",
+  "auto_continue",
+  "delegate_start",
+  "system_note",
+]);
 
 /** 服务端 session.resume 返回（methods_session.py 实际结构，无顶层 title） */
 export interface ResumeSessionResult {
