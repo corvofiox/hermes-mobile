@@ -781,9 +781,13 @@ function SessionItem({
       )}
       <div className="session-main">
         <div className="session-title">
-          {/* 标题显示最新对话：本地记录的最后消息优先；无记录回退原标题（preview=首条消息仅兜底） */}
-          {lastMsg || s.title || s.preview || "（无标题）"}
+          {/* 标题行：会话标题（服务端生成，如"问候与服务介绍"） */}
+          {s.title || "（无标题）"}
           {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
+        </div>
+        <div className="session-preview">
+          {/* 副行：最新消息（本地记录）；无记录回退首条消息预览 */}
+          {lastMsg || s.preview || "—"}
         </div>
       </div>
       <div className="session-side">
