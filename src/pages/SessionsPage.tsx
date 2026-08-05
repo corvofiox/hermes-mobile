@@ -179,6 +179,24 @@ function useLongPress(onLongPress: () => void) {
 
 // ---- 页面 ----------------------------------------------------------------
 
+/** 读取本地记录的会话最后消息（列表标题显示最新对话；服务端 preview 为首条消息不可用） */
+function getLastMessage(sessionId: string): string {
+  try {
+    return localStorage.getItem(`hermes.session.lastmsg.${sessionId}`) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** 删除会话时清理本地最后消息记录 */
+function clearLastMessage(sessionId: string): void {
+  try {
+    localStorage.removeItem(`hermes.session.lastmsg.${sessionId}`);
+  } catch {
+    // 忽略
+  }
+}
+
 export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSession, onLogout }: Props) {
   const [sessions, setSessions] = useState<RestSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -356,6 +374,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     setError("");
     try {
       await deleteSessionRest(s.id);
+      clearLastMessage(s.id);
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -420,6 +439,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
         setError(`部分会话已被其他端删除（实际删除 ${deleted} 个）`);
       }
       setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
+      ids.forEach(clearLastMessage);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -748,8 +768,8 @@ function SessionItem({
       )}
       <div className="session-main">
         <div className="session-title">
-          {/* 标题显示最新对话（服务端 preview=最后消息预览）；无消息会话回退原标题 */}
-          {s.preview || s.title || "（无标题）"}
+          {/* 标题显示最新对话：本地记录的最后消息优先；无记录（未在本机打开过的会话）回退原标题 */}
+          {getLastMessage(s.id) || s.title || "（无标题）"}
           {badge.label && <span className={`badge ${badge.cls}`}>{badge.label}</span>}
         </div>
       </div>

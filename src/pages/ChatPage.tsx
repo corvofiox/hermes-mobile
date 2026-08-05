@@ -365,6 +365,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     return off;
   }, [gateway, doResume]);
 
+  // 本地记录会话最后消息（列表标题显示最新对话；服务端 preview 是首条消息，不可用）
+  useEffect(() => {
+    const last = [...messages].reverse().find((m) => m.text.trim());
+    if (last && !last.streaming) {
+      try {
+        localStorage.setItem(`hermes.session.lastmsg.${sessionId}`, last.text.trim().slice(0, 60));
+      } catch {
+        // 存储失败忽略
+      }
+    }
+  }, [messages, sessionId]);
+
   // 自动滚底：仅当用户位于底部附近（<100px）时跟随
   useEffect(() => {
     const el = chatBodyRef.current;
