@@ -403,3 +403,26 @@ export function setModelPref(pref: ModelPref): void {
 
 // 兼容导出：旧代码引用的 buildWsUrl 由 gateway.ts 改用 server.ts 的 wsUrl
 export { getBaseUrl };
+
+/**
+ * 读取托管文件（历史附件下载）：GET /api/files/read?path=<服务端路径>
+ * 返回 data_url（base64），原生环境走 CapacitorHttp（带 cookie 鉴权）。
+ * 限制：服务端 _MANAGED_FILE_MAX_BYTES=100MB，超限返回 413。
+ */
+export async function downloadFileRest(path: string): Promise<{
+  ok: boolean;
+  name?: string;
+  size?: number;
+  mime_type?: string;
+  data_url?: string;
+  detail?: string;
+}> {
+  const qs = new URLSearchParams();
+  qs.set("path", path);
+  const { status, data } = await httpRequest(`/api/files/read?${qs.toString()}`);
+  if (status !== 200) {
+    const d = (data ?? {}) as { detail?: string };
+    return { ok: false, detail: d.detail ?? `下载失败 (HTTP ${status})` };
+  }
+  return { ok: true, ...((data ?? {}) as object) };
+}

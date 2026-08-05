@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
+import { downloadFileRest, getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
+import { isNative } from "../lib/server";
 import type { GatewayEvent, HermesGateway } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
@@ -24,7 +25,7 @@ interface Msg {
   /** 用户发送的图片（本地 dataUrl 预览） */
   images?: string[];
   /** 用户发送的文件（名称展示） */
-  files?: { name: string; size: number }[];
+  files?: { name: string; size: number; path?: string }[];
 }
 
 interface ToolActivity {
@@ -289,7 +290,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           const files = fileRefs.map((ref) => {
             const path = ref.replace(/^@file:/, "").replace(/^["'`]|["'`]$/g, "");
             const name = path.split("/").pop() ?? path;
-            return { name, size: 0 };
+            return { name, size: 0, path };
           });
           const text = fileRefs.length > 0
             ? raw.replace(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g, "").trim()
@@ -430,7 +431,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     const fileText = pendingFiles.map((f) => f.refText);
     const promptText = [text, imageText, ...fileText].filter(Boolean).join("\n");
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
-    const fileInfos = pendingFiles.map((f) => ({ name: f.name, size: f.size }));
+    const fileInfos = pendingFiles.map((f) => {
+      const path = f.refText.replace(/^@file:/, "").trim();
+      return { name: f.name, size: f.size, path: path || undefined };
+    });
     setInput("");
     setPendingImages([]);
     setPendingFiles([]);
@@ -712,6 +716,52 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
+  /** 下载文件（历史附件）：原生=files/read→写缓存→系统分享；Web=a 标签触发 download 端点 */
+  const downloadFile = async (file: { name: string; path?: string }) => {
+    if (!file.path) {
+      setStatus("该文件无下载路径（本次会话附件）");
+      return;
+    }
+    try {
+      const res = await downloadFileRest(file.path);
+      if (!res.ok || !res.data_url) {
+        setStatus(res.detail ?? "文件下载失败");
+        return;
+      }
+      if (isNative()) {
+        // 原生：data_url → 写 App 缓存目录 → 系统分享（保存到任意位置）
+        const { Filesystem, Directory } = await import("@capacitor/filesystem");
+        const { Share } = await import("@capacitor/share");
+        const base64 = res.data_url.split(",")[1] ?? "";
+        const safeName = (file.name || "download").replace(/[\\/:*?"<>|]/g, "_");
+        const uri = await Filesystem.writeFile({
+          path: safeName,
+          data: base64,
+          directory: Directory.Cache,
+        });
+        await Share.share({
+          title: file.name,
+          url: uri.uri,
+          dialogTitle: "保存/分享文件",
+        });
+        setStatus(`已读取 ${file.name}（${((res.size ?? 0) / 1024).toFixed(1)} KB）`);
+      } else {
+        // Web：同源代理 download 端点（浏览器原生下载）
+        const qs = new URLSearchParams();
+        qs.set("path", file.path);
+        const a = document.createElement("a");
+        a.href = `/api/files/download?${qs.toString()}`;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setStatus(`开始下载 ${file.name}`);
+      }
+    } catch (err) {
+      setStatus(`下载失败：${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   const connDotCls =
     connState === "open" ? "ok" : connState === "connecting" || connState === "idle" ? "pending" : "down";
   const connDotTitle =
@@ -775,10 +825,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                 {m.files && m.files.length > 0 && (
                   <div className="msg-files">
                     {m.files.map((f, i) => (
-                      <div key={i} className="msg-file">
+                      <div
+                        key={i}
+                        className={`msg-file${f.path ? " clickable" : ""}`}
+                        onClick={() => {
+                          if (f.path) void downloadFile(f);
+                        }}
+                        title={f.path ? `点击下载 ${f.name}` : f.name}
+                      >
                         <span className="msg-file-icon">📄</span>
                         <span className="msg-file-name">{f.name}</span>
                         <span className="msg-file-size">{formatSize(f.size)}</span>
+                        {f.path && <span className="msg-file-dl">⬇</span>}
                       </div>
                     ))}
                   </div>
