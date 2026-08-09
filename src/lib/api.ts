@@ -190,7 +190,7 @@ export async function passwordLoginWithFallback(
     else clearBaseUrl();
   }
   if (lastErr instanceof ApiError) throw lastErr;
-  throw new Error(`无法连接服务器：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
+  throw new Error(`无法连接服务器：${lastErr ? (lastErr instanceof Error ? lastErr.message : String(lastErr)) : "未配置服务器地址"}`);
 }
 
 /** 登出：清 cookie 并调用服务端登出 */

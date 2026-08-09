@@ -105,25 +105,49 @@ function extractMedia(text: string): {
   const images: string[] = [];
   const files: { path: string; name: string }[] = [];
   const MEDIA_RE =
-    /[*_`"'\\]{0,3}MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+?))(?=[\s`"'*,;:)\]\[}]|MEDIA:|\.(?:\s|$)|$)/g;
-  const cleaned = text
-    .replace(MEDIA_RE, (_m, a: string, b: string, c: string, d: string) => {
-      const path = (a ?? b ?? c ?? d ?? "").trim().replace(/[*_`"'),.;:!?，。；：！？]+$/, "");
-      if (!path) return "";
-      const ext = path.split(".").pop()?.toLowerCase() ?? "";
-      if (path.startsWith("/") && MEDIA_IMAGE_EXTS.has(ext)) {
-        images.push(path);
-        return "";
+    /[*_`"'\\]{0,3}MEDIA:\s*(?:`([^`]+)`|"([^"]+)"|'([^']+)'|([^\s\n]+?))(?=[\s`"'*,;:)\]\[}，。；：！？、]|MEDIA:|\.(?:\s|$)|$)/g;
+  const consumed: { start: number; end: number }[] = [];
+  for (const mt of text.matchAll(MEDIA_RE)) {
+    const fullMatch = mt[0];
+    const offset = mt.index ?? 0;
+    let path = (mt[1] ?? mt[2] ?? mt[3] ?? mt[4] ?? "")
+      .trim()
+      .replace(/[*_`"'),.;:!?，。；：！？、]+$/, "");
+    if (!path) {
+      // 空路径（如 MEDIA:""）：与既有行为一致，整体删除
+      consumed.push({ start: offset, end: offset + fullMatch.length });
+      continue;
+    }
+    let end = offset + fullMatch.length;
+    // 宽松回退（中文标点边界补丁）：路径本身含全角标点（如 `测试！.png`）时，
+    // 主前瞻在标点处截断导致 path 无扩展名 → 从原文紧随位置取标点+连续非空白段，
+    // 若该段含扩展名（ASCII 点）则并入 path 与删除区间（正文尾随标点场景因无点不受影响）
+    if (!path.includes(".")) {
+      const wide = text.slice(end).match(/^[，。；：！？、][^\s\n]*?(?=MEDIA:|\s|$)/);
+      if (wide) {
+        // 剥尾到扩展名：`测试！.png。完成`/`测试！.png,`/`测试！.png**` 均截为 `测试！.png`，
+        // 正文尾随垃圾保留在原文（end 只推进到扩展名尾）；无 ASCII 点则整体不合并
+        const w = wide[0].replace(/(\.[A-Za-z0-9]{1,8})[^.]*$/, "$1");
+        if (w.includes(".")) {
+          path = (path + w).replace(/[*_`"'),.;:!?，。；：！？、]+$/, "");
+          end += w.length;
+        }
       }
-      // 文件分支锚定：仅绝对路径（/ 开头）且带扩展名的真实引用建卡片；
-      // 正文里的 MEDIA: 字面示例（相对路径/无扩展名）保留原文，避免假卡片
-      if (path.startsWith("/") && ext) {
-        files.push({ path, name: path.split("/").pop() ?? path });
-        return "";
-      }
-      return _m;
-    })
-    .trim();
+    }
+    const ext = path.split(".").pop()?.toLowerCase() ?? "";
+    if (path.startsWith("/") && MEDIA_IMAGE_EXTS.has(ext)) {
+      images.push(path);
+      consumed.push({ start: offset, end });
+    } else if (path.startsWith("/") && ext) {
+      files.push({ path, name: path.split("/").pop() ?? path });
+      consumed.push({ start: offset, end });
+    }
+  }
+  let cleaned = text;
+  for (const seg of consumed.sort((x, y) => y.start - x.start)) {
+    cleaned = cleaned.slice(0, seg.start) + cleaned.slice(seg.end);
+  }
+  cleaned = cleaned.trim();
   return { text: cleaned, images, files };
 }
 

@@ -30,6 +30,9 @@ export default function App() {
 
   useEffect(() => {
     screenRef.current = screen;
+    // 屏幕切换：所有弹窗/菜单随页面销毁，modal 计数归零
+    // （防卸载期间 open 事件残留——如菜单打开时 401 切登录页导致计数泄漏、返回键首次失效）
+    modalCountRef.current = 0;
   }, [screen]);
 
   // 弹窗打开计数：各弹窗组件（ConfirmModal/RenameModal/ModelPicker/菜单）打开/关闭时上报，
