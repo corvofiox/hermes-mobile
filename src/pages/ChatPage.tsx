@@ -16,12 +16,26 @@ interface Props {
   onBack: () => void;
 }
 
+interface ToolCall {
+  id: string;
+  name: string;
+  /** 参数（JSON 字符串，仅用于展示） */
+  args?: string;
+  status: "running" | "done";
+}
+
 interface Msg {
   id: number;
   role: "user" | "assistant" | "system";
   text: string;
   streaming?: boolean;
   error?: boolean;
+  /** 思维链文本（reasoning.delta 流式累积，或 resume 历史的 reasoning_content） */
+  reasoning?: string;
+  /** 思维链流式中（流式期间折叠块自动展开，message.complete 后收起） */
+  reasoningStreaming?: boolean;
+  /** 工具调用链（tool.start → tool.complete，或 resume 历史的 tool_calls） */
+  tools?: ToolCall[];
   /** 用户发送的图片（本地 dataUrl 预览） */
   images?: string[];
   /** 用户发送的文件（名称展示） */
@@ -30,7 +44,8 @@ interface Msg {
 
 interface ToolActivity {
   name: string;
-  args?: string;
+  /** 服务端实际发 JSON 对象（非字符串），展示侧需要时自行 stringify */
+  args?: unknown;
 }
 
 interface PendingImage {
@@ -216,6 +231,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const wasDisconnectedRef = useRef(false);
   /** delta 累积缓冲 + rAF 节流批量 setState */
   const deltaBufRef = useRef("");
+  /** reasoning delta 累积缓冲（与 text 缓冲同帧合并 flush，保持 rAF 单次渲染语义） */
+  const reasoningBufRef = useRef("");
   const rafRef = useRef<number | null>(null);
 
   const nextId = () => ++msgId.current;
@@ -229,22 +246,44 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     const flushDelta = () => {
       rafRef.current = null;
       const text = deltaBufRef.current;
-      if (!text) return;
+      const reasoning = reasoningBufRef.current;
+      if (!text && !reasoning) return;
       deltaBufRef.current = "";
+      reasoningBufRef.current = "";
       const newId = nextId();
       setMessages((prev) => {
         const copy = [...prev];
         const last = copy[copy.length - 1];
         if (last && last.role === "assistant" && last.streaming) {
-          copy[copy.length - 1] = { ...last, text: last.text + text };
-        } else {
-          copy.push({ id: newId, role: "assistant", text, streaming: true });
+          // 防重：最后一条 assistant streaming（无论 text 是否为空）都只更新不 push
+          copy[copy.length - 1] = {
+            ...last,
+            ...(text ? { text: last.text + text } : {}),
+            ...(reasoning
+              ? { reasoning: (last.reasoning ?? "") + reasoning, reasoningStreaming: true }
+              : {}),
+          };
+        } else if (text || reasoning) {
+          // 推理内容先于正文到达：气泡正文为空但思维链在流
+          copy.push({
+            id: newId,
+            role: "assistant",
+            text,
+            streaming: true,
+            ...(reasoning ? { reasoning, reasoningStreaming: true } : {}),
+          });
         }
         return copy;
       });
     };
     const queueDelta = (text: string) => {
       deltaBufRef.current += text;
+      if (rafRef.current == null) {
+        rafRef.current = requestAnimationFrame(flushDelta);
+      }
+    };
+    const queueReasoning = (text: string) => {
+      reasoningBufRef.current += text;
       if (rafRef.current == null) {
         rafRef.current = requestAnimationFrame(flushDelta);
       }
@@ -256,6 +295,14 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       const payload = ev.payload as { text?: string } | undefined;
       if (!payload?.text) return;
       queueDelta(payload.text);
+    });
+    // 思维链：thinking.delta 是服务端"思考中"spinner 状态行（kawaii 噪声，非推理内容），不订阅；
+    // reasoning.delta 才是真实推理内容（流式），拼进 reasoning 字段（共享缓冲，与正文同帧合并 flush）
+    const offReasoning = gateway.on("reasoning.delta", (ev) => {
+      if (!isForThisSession(ev)) return;
+      const payload = ev.payload as { text?: string } | undefined;
+      if (!payload?.text) return;
+      queueReasoning(payload.text);
     });
     const offComplete = gateway.on("message.complete", (ev) => {
       if (!isForThisSession(ev)) return;
@@ -275,7 +322,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             ...last,
             text: payload?.text ?? last.text,
             streaming: false,
+            reasoningStreaming: false,
             error: payload?.status === "error",
+            // 收尾自愈：interrupt/error 路径服务端不发 tool.complete，
+            // 把消息内仍 running 的 tool chip 统一置 done（正常路径已全 done，此处幂等 no-op）
+            tools: (last.tools ?? []).map((t) =>
+              t.status === "running" ? { ...t, status: "done" } : t,
+            ),
           };
         } else if (payload?.text) {
           // 无 streaming 消息（如极短回复）也补一条，不静默丢弃。
@@ -305,12 +358,53 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     });
     const offToolStart = gateway.on("tool.start", (ev) => {
       if (!isForThisSession(ev)) return;
-      const payload = ev.payload as { name?: string; args?: string } | undefined;
+      const payload = ev.payload as
+        | { tool_id?: string | number; name?: string; args?: unknown; args_text?: string }
+        | undefined;
       setTool({ name: payload?.name ?? "工具", args: payload?.args });
       setStatus(`正在执行: ${payload?.name ?? "工具"}`);
+      // 工具调用链：追加到最后一条 assistant 消息的 tools[]；
+      // 没有 assistant 消息时创建空 streaming assistant 消息（同 thinking 的规则）
+      const toolCall: ToolCall = {
+        id: String(payload?.tool_id ?? nextId()),
+        name: payload?.name ?? "工具",
+        args:
+          payload?.args_text ??
+          (payload?.args != null ? JSON.stringify(payload.args) : undefined),
+        status: "running",
+      };
+      const nid = nextId();
+      setMessages((prev) => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        // 仅当最后一条是流式中的 assistant 消息才追加工具链；
+        // 已完成的上回合消息不追加（auto-continue/多轮代理时新回合首个事件是 tool.start，走 else 分支 push 新消息）
+        if (last && last.role === "assistant" && last.streaming) {
+          copy[copy.length - 1] = { ...last, tools: [...(last.tools ?? []), toolCall] };
+        } else {
+          copy.push({ id: nid, role: "assistant", text: "", streaming: true, tools: [toolCall] });
+        }
+        return copy;
+      });
     });
     const offToolComplete = gateway.on("tool.complete", (ev) => {
       if (!isForThisSession(ev)) return;
+      const payload = ev.payload as { tool_id?: string | number; name?: string } | undefined;
+      // 工具链收尾：id 匹配的 chip 置为 done；找不到匹配静默忽略（重连后 inflight 工具链不完整属正常）
+      const toolId = payload?.tool_id;
+      if (toolId != null) {
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (!last || last.role !== "assistant" || !last.tools?.length) return prev;
+          const idx = last.tools.findIndex((t) => t.id === String(toolId));
+          if (idx < 0) return prev;
+          const copy = [...prev];
+          const tools = [...last.tools];
+          tools[idx] = { ...tools[idx], status: "done" };
+          copy[copy.length - 1] = { ...last, tools };
+          return copy;
+        });
+      }
       setTool(null);
       setStatus("");
     });
@@ -329,6 +423,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
       offState();
       offDelta();
+      offReasoning();
       offComplete();
       offToolStart();
       offToolComplete();
@@ -349,6 +444,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       rafRef.current = null;
     }
     deltaBufRef.current = "";
+    reasoningBufRef.current = "";
     try {
       if (gateway.connectionState !== "open") {
         await gateway.connect();
@@ -375,17 +471,57 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           const text = fileRefs.length > 0
             ? raw.replace(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g, "").trim()
             : raw;
+          // 思维链 + 工具调用链：resume 返回的 assistant 消息带 reasoning_content（字符串）
+          // 与 tool_calls（OpenAI 风格数组，arguments 为 JSON 字符串）；HistoryMessage 里是
+          // [k: string]: unknown 兜底字段，显式断言 + 容错校验后再取
+          let reasoning: string | undefined;
+          let tools: ToolCall[] | undefined;
+          if (m.role === "assistant") {
+            const rc = (m as { reasoning_content?: unknown }).reasoning_content;
+            if (typeof rc === "string" && rc.length > 0) reasoning = rc;
+            const rawCalls = (m as { tool_calls?: unknown }).tool_calls;
+            if (Array.isArray(rawCalls)) {
+              const calls = rawCalls.filter(
+                (c): c is Record<string, unknown> => !!c && typeof c === "object",
+              );
+              if (calls.length > 0) {
+                tools = calls.map((c, i) => {
+                  const fn =
+                    typeof c["function"] === "object" && c["function"] !== null
+                      ? (c["function"] as Record<string, unknown>)
+                      : {};
+                  const name = String(fn.name ?? c.name ?? "tool");
+                  const argsRaw = fn.arguments;
+                  return {
+                    // idx- 前缀：避免纯数字 index 与真实数字 id 撞 React key
+                    id: String(c.id ?? c.call_id ?? `idx-${i}`),
+                    name,
+                    args:
+                      typeof argsRaw === "string"
+                        ? argsRaw
+                        : argsRaw != null
+                          ? JSON.stringify(argsRaw)
+                          : undefined,
+                    status: "done" as const,
+                  };
+                });
+              }
+            }
+          }
           return {
             id: nextId(),
             role: m.role as "user" | "assistant",
             text,
             ...(files.length > 0 ? { files } : {}),
+            ...(reasoning !== undefined ? { reasoning } : {}),
+            ...(tools !== undefined ? { tools } : {}),
           };
         });
       // 断线重连恢复：会话仍在运行则进入 busy，并用 inflight 快照初始化末条消息；
       // 否则必须复位 busy/tool/status（旧 complete 帧可能丢在断掉的 transport 上，永远等不到）
       if (resumed.running) {
         setBusy(true);
+        setTool(null); // 清理断线前残留的"正在执行: X"（tool 状态；status 由后续事件覆盖）
         const inflight = resumed.inflight;
         if (inflight?.assistant && inflight.streaming) {
           // 去重：history 最后一条已是同一回复（部分文本）则不重复 push
@@ -986,28 +1122,53 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                           ))}
                         </div>
                       )}
-                      <div className="markdown-body">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            pre: CodeBlock,
-                            img: ({ src, alt }) => (
-                              <img
-                                src={src}
-                                alt={alt ?? ""}
-                                className="md-image"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  if (src) setPreviewImg(src);
-                                }}
-                              />
-                            ),
-                          }}
-                        >
-                          {displayText}
-                        </ReactMarkdown>
-                      </div>
-                      {m.streaming && <span className="cursor" />}
+                      {m.reasoning && (
+                        <details className="reasoning-block" open={!!m.reasoningStreaming}>
+                          <summary>🤔 思考过程</summary>
+                          <div className="reasoning-body">
+                            {m.reasoning}
+                            {m.reasoningStreaming && <span className="cursor" />}
+                          </div>
+                        </details>
+                      )}
+                      {m.tools && m.tools.length > 0 && (
+                        <div className="tool-chain">
+                          {m.tools.map((t) => (
+                            <span
+                              key={t.id}
+                              className={`tool-chip${t.status === "running" ? " running" : ""}`}
+                            >
+                              🔧 {t.name}
+                              {t.status === "running" && <span className="dot" />}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {/* text 为空但有 reasoning/tools 时不渲染空 markdown 容器；空回复的普通消息保持原状 */}
+                      {(displayText || (!m.reasoning && !m.tools?.length)) && (
+                        <div className="markdown-body">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm]}
+                            components={{
+                              pre: CodeBlock,
+                              img: ({ src, alt }) => (
+                                <img
+                                  src={src}
+                                  alt={alt ?? ""}
+                                  className="md-image"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (src) setPreviewImg(src);
+                                  }}
+                                />
+                              ),
+                            }}
+                          >
+                            {displayText}
+                          </ReactMarkdown>
+                        </div>
+                      )}
+                      {m.streaming && !m.reasoningStreaming && <span className="cursor" />}
                     </>
                   );
                 })()}

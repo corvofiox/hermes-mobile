@@ -851,6 +851,103 @@ button {
   border-radius: 4px;
 }
 
+/* ---------- 思维链 / 工具调用链 ---------- */
+
+.reasoning-block {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--ink) 3%, transparent);
+}
+.reasoning-block summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+  padding: 6px 10px;
+  list-style: none;
+}
+.reasoning-block summary::-webkit-details-marker {
+  display: none;
+}
+.reasoning-block summary::before {
+  content: "▸ ";
+  display: inline-block;
+  transition: transform 0.15s ease;
+  color: var(--accent);
+}
+.reasoning-block[open] summary::before {
+  transform: rotate(90deg);
+}
+.reasoning-body {
+  max-height: 40vh;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 0 8px 8px;
+}
+
+.tool-chain {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 6px 0;
+}
+.tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tool-chip .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1s ease-in-out infinite;
+}
+.tool-chip.running {
+  border-color: var(--accent);
+  color: var(--accent2);
+  background: var(--accent-dim);
+  animation: chip-pulse 1.5s ease-in-out infinite;
+}
+@keyframes chip-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.6;
+  }
+}
+
 /* ---------- 输入栏 ---------- */
 
 .composer {
