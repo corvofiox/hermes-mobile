@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getModelOptions, type ModelPref, type ModelProvider } from "../lib/api";
 
 interface Props {
@@ -15,6 +15,20 @@ export default function ModelPicker({ current, onSelect, onCancel }: Props) {
   const [error, setError] = useState("");
   /** 展开的 provider slug（默认展开当前 provider） */
   const [expanded, setExpanded] = useState<string>(current.provider);
+  // 稳定回调引用（父组件内联箭头函数每次渲染都是新引用，避免 effect 反复重挂）
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+
+  // 物理返回键感知：打开时通知 App（弹窗打开时返回键应关闭弹窗而非返回/退出）
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("hermes:modal-change", { detail: { open: true } }));
+    const onCloseRequest = () => onCancelRef.current();
+    window.addEventListener("hermes:modal-close-request", onCloseRequest);
+    return () => {
+      window.removeEventListener("hermes:modal-close-request", onCloseRequest);
+      window.dispatchEvent(new CustomEvent("hermes:modal-change", { detail: { open: false } }));
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

@@ -288,6 +288,9 @@ button {
   background: var(--warn);
   animation: blink 1s step-start infinite;
 }
+.conn-dot.idle {
+  background: var(--text-dim);
+}
 
 /* 分类 Tab 栏 */
 .tab-bar {
@@ -1009,14 +1012,24 @@ button {
 
 /* ---------- 消息错误态 ---------- */
 
-/* 用户消息发送失败 */
+/* 用户消息发送失败（m3：点击重发——span 改 button，需重置按钮默认样式） */
 .send-failed {
   display: block;
   margin-top: 6px;
+  padding: 2px 0;
   font-size: 12px;
   line-height: 1.4;
   color: #ffe2e4;
   opacity: 0.95;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+}
+.send-failed:active {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 /* 助手消息 error（如 status=error 的完成） */
@@ -1062,7 +1075,7 @@ button {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.9);
-  color: var(--text-main);
+  color: var(--ink);
   outline: none;
 }
 .search-input:focus {
@@ -1131,10 +1144,6 @@ button {
   font-size: 13px;
   color: var(--text-dim);
 }
-.btn-danger {
-  background: #d64545;
-  color: #fff;
-}
 .btn-danger:disabled {
   opacity: 0.4;
 }
@@ -1183,13 +1192,13 @@ button {
   background: none;
   border: none;
   border-top: 1px solid rgba(16, 49, 63, 0.06);
-  color: var(--text-main);
+  color: var(--ink);
 }
 .sheet-item:active {
   background: rgba(16, 49, 63, 0.06);
 }
 .sheet-item.danger {
-  color: #d64545;
+  color: var(--danger);
 }
 .sheet-item.cancel {
   text-align: center;
@@ -1208,7 +1217,7 @@ button {
   background: rgba(16, 49, 63, 0.06);
   border: 1px solid var(--border);
   border-radius: 12px;
-  color: var(--text-main);
+  color: var(--ink);
   font-size: 12px;
   flex-shrink: 0;
 }
@@ -1237,7 +1246,7 @@ button {
   color: var(--text-dim);
 }
 .model-picker-status.error {
-  color: #d64545;
+  color: var(--danger);
 }
 .spinner-sm {
   width: 18px;
@@ -1258,7 +1267,7 @@ button {
   border: none;
   border-top: 1px solid rgba(16, 49, 63, 0.06);
   font-size: 15px;
-  color: var(--text-main);
+  color: var(--ink);
 }
 .model-provider-head:active {
   background: rgba(16, 49, 63, 0.05);
@@ -1299,7 +1308,7 @@ button {
   background: none;
   border: none;
   font-size: 14px;
-  color: var(--text-main);
+  color: var(--ink);
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 .model-item:active {
@@ -1374,7 +1383,7 @@ button {
   opacity: 0.4;
 }
 .voice-btn.listening {
-  background: #d64545;
+  background: var(--danger);
   color: #fff;
   animation: voice-pulse 1.2s ease-in-out infinite;
 }
@@ -1410,7 +1419,7 @@ button {
   height: 20px;
   border-radius: 50%;
   border: none;
-  background: #d64545;
+  background: var(--danger);
   color: #fff;
   font-size: 11px;
   display: flex;
@@ -1575,7 +1584,7 @@ button {
   height: 20px;
   border-radius: 50%;
   border: none;
-  background: #d64545;
+  background: var(--danger);
   color: #fff;
   font-size: 11px;
   display: flex;

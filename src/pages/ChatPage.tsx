@@ -40,6 +40,8 @@ interface Msg {
   images?: string[];
   /** 用户发送的文件（名称展示） */
   files?: { name: string; size: number; path?: string }[];
+  /** resume 渲染的历史/快照消息标记（文本去重只对 resume 消息生效，防误吞两条真实相同回复） */
+  fromResume?: boolean;
 }
 
 interface ToolActivity {
@@ -53,6 +55,8 @@ interface PendingImage {
   dataUrl: string;
   /** attach 响应文本（纯图片发送时作为 prompt） */
   text: string;
+  /** attach 时的 live session id（断线重连后会话变更检测） */
+  attachSessionId?: string;
 }
 
 interface PendingFile {
@@ -65,6 +69,8 @@ interface PendingFile {
   uploading: boolean;
   /** 上传进度 0-100 */
   progress: number;
+  /** attach 时的 live session id（断线重连后会话变更检测） */
+  attachSessionId?: string;
 }
 
 /**
@@ -119,6 +125,21 @@ function extractMedia(text: string): {
     })
     .trim();
   return { text: cleaned, images, files };
+}
+
+/**
+ * extractMedia 结果缓存（m8c 性能）：流式期间每帧全量重渲染，所有非 streaming 消息都会
+ * 重复跑 MEDIA 正则——按输入文本缓存（纯函数，结果不可变），超上限整体清空防无限增长。
+ */
+const mediaCache = new Map<string, ReturnType<typeof extractMedia>>();
+const MEDIA_CACHE_MAX = 300;
+function extractMediaCached(text: string): ReturnType<typeof extractMedia> {
+  const cached = mediaCache.get(text);
+  if (cached) return cached;
+  const result = extractMedia(text);
+  if (mediaCache.size >= MEDIA_CACHE_MAX) mediaCache.clear();
+  mediaCache.set(text, result);
+  return result;
 }
 
 /** 异步加载服务端图片（httpRequest 双路径带 cookie → data_url 渲染）；loading/error 降级 */
@@ -237,6 +258,36 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
   const nextId = () => ++msgId.current;
 
+  /**
+   * 无 complete 封口路径（error 事件 / 断线 stop 失败）收尾最后一条 streaming assistant 消息：
+   * 取消 rAF + 清空 delta/reasoning 缓冲（与 doResume 开头同款清理，防迟到 flush 推幽灵消息），
+   * 置 streaming/reasoningStreaming=false（游标停止闪烁），并把仍 running 的工具 chip 置 done
+   * （服务端 error/interrupt 路径不发 tool.complete，与 message.complete 收尾自愈同语义）。
+   */
+  const finalizeStreaming = useCallback(() => {
+    if (rafRef.current != null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    deltaBufRef.current = "";
+    reasoningBufRef.current = "";
+    setMessages((prev) => {
+      const copy = [...prev];
+      const last = copy[copy.length - 1];
+      if (last && last.role === "assistant" && last.streaming) {
+        copy[copy.length - 1] = {
+          ...last,
+          streaming: false,
+          reasoningStreaming: false,
+          tools: (last.tools ?? []).map((t) =>
+            t.status === "running" ? { ...t, status: "done" } : t,
+          ),
+        };
+      }
+      return copy;
+    });
+  }, []);
+
   // 事件订阅：delta 追加到当前 streaming 消息
   useEffect(() => {
     // 事件过滤：仅处理本会话（live session_id）的事件
@@ -312,7 +363,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         rafRef.current = null;
       }
       flushDelta();
-      const payload = ev.payload as { text?: string; status?: string } | undefined;
+      const payload = ev.payload as
+        | { text?: string; status?: string; reasoning?: string }
+        | undefined;
       const newId = nextId();
       setMessages((prev) => {
         const copy = [...prev];
@@ -320,25 +373,33 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         if (last && last.role === "assistant" && last.streaming) {
           copy[copy.length - 1] = {
             ...last,
-            text: payload?.text ?? last.text,
+            // 空串覆盖防御（m12）：complete 带空 text 时保留已累积文本
+            text: payload?.text && payload.text.length > 0 ? payload.text : last.text,
             streaming: false,
             reasoningStreaming: false,
             error: payload?.status === "error",
+            // reasoning 补全（m1）：断线期间丢失的 reasoning.delta 无法补全，complete
+            // 若携带 reasoning（非空字符串）则并入；空/缺失时保留已累积的流式内容
+            ...(payload?.reasoning && payload.reasoning.length > 0
+              ? { reasoning: payload.reasoning }
+              : {}),
             // 收尾自愈：interrupt/error 路径服务端不发 tool.complete，
-            // 把消息内仍 running 的 tool chip 统一置 done（正常路径已全 done，此处幂等 no-op）
+            // 把消息内仍 running 的 tool chip 统一置 done（正常流程已全 done，此处幂等 no-op）
             tools: (last.tools ?? []).map((t) =>
               t.status === "running" ? { ...t, status: "done" } : t,
             ),
           };
         } else if (payload?.text) {
           // 无 streaming 消息（如极短回复）也补一条，不静默丢弃。
-          // 去重：与最后一条已完成 assistant 消息文本相同 → 跳过
-          // （息屏/断线重连后迟到的 complete 与 resume 历史重复，防同一条回复渲染两次）
+          // 去重（m2）：仅当最后一条是 resume 渲染的历史 assistant 消息且文本相同才跳过
+          // （息屏/断线重连后迟到的 complete 与 resume 历史重复，防同一条回复渲染两次）；
+          // 两条真实相同的回复（live 路径）不带 fromResume 标记，不受影响。
           const prevLast = copy[copy.length - 1];
           if (
             prevLast &&
             prevLast.role === "assistant" &&
             !prevLast.streaming &&
+            prevLast.fromResume &&
             prevLast.text === payload.text
           ) {
             return prev;
@@ -348,6 +409,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             role: "assistant",
             text: payload.text,
             error: payload?.status === "error",
+            ...(payload?.reasoning && payload.reasoning.length > 0
+              ? { reasoning: payload.reasoning }
+              : {}),
           });
         }
         return copy;
@@ -363,6 +427,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         | undefined;
       setTool({ name: payload?.name ?? "工具", args: payload?.args });
       setStatus(`正在执行: ${payload?.name ?? "工具"}`);
+      // M1：多轮代理 auto-continue 时新回合首个事件是 tool.start——上一回合的
+      // message.complete 已无条件 setBusy(false)，这里重新占用 busy（幂等，防停止按钮消失/发送解禁）
+      setBusy(true);
       // 工具调用链：追加到最后一条 assistant 消息的 tools[]；
       // 没有 assistant 消息时创建空 streaming assistant 消息（同 thinking 的规则）
       const toolCall: ToolCall = {
@@ -417,6 +484,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (!isForThisSession(ev)) return;
       const payload = ev.payload as { message?: string } | undefined;
       setStatus(payload?.message ?? "出错了");
+      // M2：error 事件没有 message.complete 封口——收尾最后一条 streaming 消息：
+      // a) 否则 streaming:true 消息游标永久闪烁；b) error→complete 窗口内用户发送新消息后，
+      //    complete 到达时 last 是 user 消息（else 分支推新气泡），原流式消息永不收尾；
+      // c) 后续回合的 tool.start/delta 会因 last.streaming 合并进错误消息。
+      // 同时取消 rAF + 清 delta/reasoning 缓冲（同 doResume 开头清理，防幽灵消息）。
+      finalizeStreaming();
       setBusy(false);
     });
     return () => {
@@ -430,7 +503,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       offStatus();
       offError();
     };
-  }, [gateway]);
+  }, [gateway, finalizeStreaming]);
 
   // 加载历史（首次打开 / 失败后重试 / 断线重连恢复）
   const doResume = useCallback(async () => {
@@ -462,14 +535,14 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           // 历史消息中的 @file: 引用还原为文件卡片。
           // 服务端对含空格/特殊字符路径的引用加引号（_format_ref_value：`"..."` 或 `'...'`），
           // 正则需引号感知；同一引用会在用户 prompt 与服务端 "Attached Context" 段重复出现，去重。
-          const fileRefs = [...new Set(raw.match(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g) ?? [])];
+          const fileRefs = [...new Set(raw.match(/@file:(?:[^\s\n"'`]+|"[^"]*"|'[^']*'|`[^`]*`)/g) ?? [])];
           const files = fileRefs.map((ref) => {
             const path = ref.replace(/^@file:/, "").replace(/^["'`]|["'`]$/g, "");
             const name = path.split("/").pop() ?? path;
             return { name, size: 0, path };
           });
           const text = fileRefs.length > 0
-            ? raw.replace(/@file:(?:[^\s\n"']+|"[^"]*"|'[^']*'|`[^`]*`)/g, "").trim()
+            ? raw.replace(/@file:(?:[^\s\n"'`]+|"[^"]*"|'[^']*'|`[^`]*`)/g, "").trim()
             : raw;
           // 思维链 + 工具调用链：resume 返回的 assistant 消息带 reasoning_content（字符串）
           // 与 tool_calls（OpenAI 风格数组，arguments 为 JSON 字符串）；HistoryMessage 里是
@@ -512,6 +585,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             id: nextId(),
             role: m.role as "user" | "assistant",
             text,
+            // m2：resume 渲染的历史消息打标记——文本去重只对带此标记的消息生效
+            fromResume: true,
             ...(files.length > 0 ? { files } : {}),
             ...(reasoning !== undefined ? { reasoning } : {}),
             ...(tools !== undefined ? { tools } : {}),
@@ -524,9 +599,18 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         setTool(null); // 清理断线前残留的"正在执行: X"（tool 状态；status 由后续事件覆盖）
         const inflight = resumed.inflight;
         if (inflight?.assistant && inflight.streaming) {
-          // 去重：history 最后一条已是同一回复（部分文本）则不重复 push
+          // 去重（m2）：仅当 history 最后一条是 resume 渲染的 assistant 消息且文本相同
+          // （同一回复）才不 push；纯文本相等会误伤"两条真实相同回复"——快照不建会导致
+          // 后续 delta 另起新气泡、回复被拆成两段
           const lastHist = msgs[msgs.length - 1];
-          if (!(lastHist && lastHist.role === "assistant" && lastHist.text === inflight.assistant)) {
+          if (
+            !(
+              lastHist &&
+              lastHist.role === "assistant" &&
+              lastHist.fromResume &&
+              lastHist.text === inflight.assistant
+            )
+          ) {
             msgs.push({ id: nextId(), role: "assistant", text: inflight.assistant, streaming: true });
           }
         }
@@ -535,7 +619,23 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         setTool(null);
         setStatus("");
       }
-      setMessages(msgs);
+      // m4：全量替换会抹掉发送失败（error:true）的本地 user 消息——合并保留并追加到尾部
+      // （函数式更新原子读取当前 state，避免 ref 镜像的时序空窗）
+      setMessages((prev) => {
+        const failedLocal = prev.filter((m) => m.role === "user" && m.error);
+        if (failedLocal.length === 0) return msgs;
+        // 去重（m7）：submitPrompt 可能实际已被服务端接受（仅 RPC 响应丢失）——re-resume 后
+        // 服务端历史已含该 user 消息，按 (role, text) 全等跳过追加，防重复渲染（点重发会双发）。
+        // 纯图片/附件的失败消息 text 为空串（本地不存 attach 文本/引用）：服务端历史不存在
+        // 空文本占位（attach 文本与 @file: 引用会写入历史），保留追加，不做文本匹配。
+        const kept = failedLocal.filter((m) => {
+          const attachOnly = m.text === "" && ((m.images?.length ?? 0) > 0 || (m.files?.length ?? 0) > 0);
+          if (attachOnly) return true;
+          return !msgs.some((h) => h.role === "user" && h.text === m.text);
+        });
+        if (kept.length === 0) return msgs;
+        return [...msgs, ...kept];
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       // 新会话未落库时 resume 会 4007/not found：re-resume 场景静默（防 busy 卡死），
@@ -577,7 +677,14 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   useEffect(() => {
     const off = gateway.onConnectionState((s) => {
       setConnState(s);
-      if (s === "closed" || s === "error") wasDisconnectedRef.current = true;
+      if (s === "closed" || s === "error") {
+        wasDisconnectedRef.current = true;
+        // m9b：断线后回合不可能再收到 complete 封口（服务端不重放事件）——立即复位
+        // busy + 清理工具状态，防停止按钮空转/发送永久禁用；
+        // 重连成功后 re-resume 若 running=true 会再置 busy（短暂闪烁可接受）
+        setBusy(false);
+        setTool(null);
+      }
       if (s === "open" && resumeSucceededRef.current && wasDisconnectedRef.current) {
         void doResume();
       }
@@ -586,8 +693,21 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   }, [gateway, doResume]);
 
   // 本地记录会话最后消息（列表标题显示最新对话；服务端 preview 是首条消息，不可用）
+  // m8a 性能：流式期间每帧都会触发本 effect——有 streaming 消息时直接跳过（写入无意义且
+  // 省全量拷贝），非流式更新 500ms 节流（lastMsgWriteRef 记录上次写时间）；逆序扫描不拷贝数组
+  const lastMsgWriteRef = useRef(0);
   useEffect(() => {
-    const last = [...messages].reverse().find((m) => m.text.trim());
+    if (messages.some((m) => m.streaming || m.reasoningStreaming)) return;
+    const now = Date.now();
+    if (now - lastMsgWriteRef.current < 500) return;
+    lastMsgWriteRef.current = now;
+    let last: Msg | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].text.trim()) {
+        last = messages[i];
+        break;
+      }
+    }
     if (last && !last.streaming) {
       try {
         localStorage.setItem(`hermes.session.lastmsg.${sessionId}`, last.text.trim().slice(0, 60));
@@ -657,9 +777,21 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       sendLockRef.current = false;
       return;
     }
+    // m6：附件所属会话已变更（断线重连后 live session id 变化，attached images/@file: 引用
+    // 指向旧会话）——阻止发送并提示重新选择（降级实现：不做自动重 attach）
+    const staleAttach = [...pendingImages, ...pendingFiles].some(
+      (p) => p.attachSessionId && p.attachSessionId !== liveSessionIdRef.current,
+    );
+    if (staleAttach) {
+      setStatus("附件所属会话已变更（可能断线重连过），请重新选择附件");
+      sendLockRef.current = false;
+      return;
+    }
     // 纯图片发送：用 attach 响应文本作为 prompt（服务端行为与桌面端一致）
     // 文件：@file: 引用拼入 prompt（agent 文件工具可读）
-    const imageText = hasImages && !text ? pendingImages[0]?.text || "" : "";
+    // m5：多图时所有图片的 attach 文本都拼入（原来只取第一张，后续图片的文本丢失）
+    const imageText =
+      hasImages && !text ? pendingImages.map((p) => p.text).filter(Boolean).join("\n") : "";
     const fileText = pendingFiles.map((f) => f.refText);
     const promptText = [text, imageText, ...fileText].filter(Boolean).join("\n");
     const imageDataUrls = pendingImages.map((p) => p.dataUrl);
@@ -676,6 +808,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     setBusy(true);
     try {
       await gateway.submitPrompt(liveSessionIdRef.current, promptText);
+      // 提交成功：清掉上次"发送失败"等残留提示，避免流式期间旧错误文本继续展示
+      setStatus("");
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -687,6 +821,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           id: nextId(),
           dataUrl,
           text: pendingImages[i]?.text ?? "",
+          attachSessionId: pendingImages[i]?.attachSessionId,
         })),
       ]);
       setPendingFiles((prev) => [
@@ -698,9 +833,33 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
           refText: pendingFiles[i]?.refText ?? "",
           uploading: false,
           progress: 100,
+          attachSessionId: pendingFiles[i]?.attachSessionId,
         })),
       ]);
       setMessages((prev) => prev.map((m) => (m.id === newId ? { ...m, error: true } : m)));
+    } finally {
+      sendLockRef.current = false;
+    }
+  };
+
+  /** m3：重发发送失败的消息（点击 ⚠️ 标记触发）。仅重发原文本——失败时图片/文件已
+   * 恢复到待发送区，由用户决定是否随下一条消息携带，避免重复 attach。 */
+  const resendFailed = async (m: Msg) => {
+    if (!m.text.trim()) {
+      setStatus("该消息没有可重发的文本");
+      return;
+    }
+    if (busy || !liveSessionIdRef.current || resumingRef.current || sendLockRef.current) return;
+    sendLockRef.current = true;
+    try {
+      setBusy(true);
+      await gateway.submitPrompt(liveSessionIdRef.current, m.text.trim());
+      // 重发成功：去掉 ⚠️ 标记（该消息转为正常消息；busy 等 complete 封口后复位）
+      setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, error: false } : x)));
+      setStatus("");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+      setBusy(false);
     } finally {
       sendLockRef.current = false;
     }
@@ -713,8 +872,15 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     gateway.interrupt(liveId).catch(() => {
       // 断线/重连期间 interrupt 会失败，给用户可见反馈而不是静默
       setStatus("停止失败：连接已断开，请稍后重试");
+      // m9a：连接已断开时 interrupt 不可能送达，回合也不会再有 complete 封口——
+      // 立即复位 busy + 收尾最后一条 streaming 消息（否则游标闪烁/后续事件合并进错误消息）
+      if (gateway.connectionState === "closed" || gateway.connectionState === "error") {
+        finalizeStreaming();
+        setBusy(false);
+        setTool(null);
+      }
     });
-  }, [gateway]);
+  }, [gateway, finalizeStreaming]);
 
   const doRename = async (name: string) => {
     setRenaming(false);
@@ -761,7 +927,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (res.attached) {
         setPendingImages((prev) => [
           ...prev,
-          { id: nextId(), dataUrl, text: res.text ?? `[User attached image: mobile_${Date.now()}]` },
+          {
+            id: nextId(),
+            dataUrl,
+            text: res.text ?? `[User attached image: mobile_${Date.now()}]`,
+            // m6：记录 attach 时的 live id（断线重连后会话变更检测）
+            attachSessionId: liveId,
+          },
         ]);
       } else {
         setStatus("图片附加失败（服务端未接受）");
@@ -802,7 +974,16 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     // 先插入上传中条目（圆形进度环）
     setPendingFiles((prev) => [
       ...prev,
-      { id: fileId, name: file.name, size: file.size, refText: "", uploading: true, progress: 0 },
+      {
+        id: fileId,
+        name: file.name,
+        size: file.size,
+        refText: "",
+        uploading: true,
+        progress: 0,
+        // m6：记录 attach 时的 live id（断线重连后会话变更检测）
+        attachSessionId: liveId,
+      },
     ]);
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => {
@@ -862,6 +1043,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         if (!mountedRef.current) return; // 等待期间返回列表则放弃
       }
     }
+    // m7：等待锁释放期间可能已被 listeningState 事件置为 listening（stop 迟到事件/竞态）——
+    // 复查 ref，已 listening 则直接返回，避免重复 start
+    if (listeningRef.current) return;
     voiceStartLockRef.current = true;
     try {
       const { SpeechRecognition } = await import("@capacitor-community/speech-recognition");
@@ -908,6 +1092,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       await SpeechRecognition.start({ language: "zh-CN", partialResults: true, popup: false });
     } catch (err) {
       if (!mountedRef.current) return; // 已卸载，不更新状态
+      // m10：启动抛错时移除已注册的监听器（防累积；监听未注册时 voiceOffRef 为空，?.() 安全）
+      voiceOffRef.current?.();
+      voiceOffRef.current = null;
       setListeningBoth(false);
       const msg = err instanceof Error ? err.message : String(err);
       setStatus(`语音识别启动失败：${msg}`);
@@ -965,8 +1152,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         // Web：直接触发 download 端点（避免先拉 data_url 双倍传输）
         const qs = new URLSearchParams();
         qs.set("path", file.path);
+        // 子路径部署时拼上 location.pathname 前缀（与 api.ts httpRequest Web 分支同款表达式），根路径部署行为不变
+        const webBase =
+          typeof location !== "undefined" && location.pathname && location.pathname !== "/"
+            ? `${location.origin}${location.pathname.replace(/\/+$/, "")}`
+            : "";
         const a = document.createElement("a");
-        a.href = `/api/files/download?${qs.toString()}`;
+        a.href = `${webBase}/api/files/download?${qs.toString()}`;
         a.download = file.name;
         document.body.appendChild(a);
         a.click();
@@ -1010,13 +1202,15 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   };
 
   const connDotCls =
-    connState === "open" ? "ok" : connState === "connecting" || connState === "idle" ? "pending" : "down";
+    connState === "open" ? "ok" : connState === "connecting" ? "pending" : connState === "idle" ? "idle" : "down";
   const connDotTitle =
     connState === "open"
       ? "已连接"
-      : connState === "connecting" || connState === "idle"
+      : connState === "connecting"
         ? "连接中…"
-        : "连接断开";
+        : connState === "idle"
+          ? "未连接"
+          : "连接断开";
 
   return (
     <div className="chat-screen">
@@ -1089,12 +1283,20 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                   </div>
                 )}
                 {m.text && <div className="user-text">{m.text}</div>}
-                {m.error && <span className="send-failed">⚠️ 发送失败</span>}
+                {m.error && (
+                  <button
+                    className="send-failed"
+                    onClick={() => void resendFailed(m)}
+                    title="点击重发该消息"
+                  >
+                    ⚠️ 发送失败 · 点击重发
+                  </button>
+                )}
               </div>
             ) : (
               <div className="bubble assistant-bubble">
                 {(() => {
-                  const { text: displayText, images, files: mediaFiles } = extractMedia(
+                  const { text: displayText, images, files: mediaFiles } = extractMediaCached(
                     m.streaming ? closeUnclosedFence(m.text) : m.text,
                   );
                   return (
@@ -1133,9 +1335,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
                       )}
                       {m.tools && m.tools.length > 0 && (
                         <div className="tool-chain">
-                          {m.tools.map((t) => (
+                          {m.tools.map((t, idx) => (
                             <span
-                              key={t.id}
+                              // m11：同回合同一 tool_id 重试会产生重复 id，key 加 index 防 React 冲突
+                              key={`${t.id}-${idx}`}
                               className={`tool-chip${t.status === "running" ? " running" : ""}`}
                             >
                               🔧 {t.name}

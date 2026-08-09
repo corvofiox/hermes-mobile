@@ -22,11 +22,9 @@ export function setBaseUrl(url: string): void {
   if (clean) localStorage.setItem(BASE_URL_KEY, clean);
 }
 
-/** 规范化用户输入：补全协议前缀（无协议时默认 http://） */
-export function normalizeBaseUrl(input: string): string {
-  let v = input.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\//i.test(v)) v = `http://${v}`;
-  return v;
+/** 清除已保存的服务器地址（全部候选探测失败时回退用，避免失败地址持久化） */
+export function clearBaseUrl(): void {
+  localStorage.removeItem(BASE_URL_KEY);
 }
 
 /**
@@ -45,7 +43,14 @@ export function baseCandidates(input: string): string[] {
   const pathIdx = host.indexOf("/");
   const hostOnly = pathIdx >= 0 ? host.slice(0, pathIdx) : host;
   const rest = pathIdx >= 0 ? host.slice(pathIdx) : "";
-  const withPort = /:\d+$/.test(hostOnly) ? host : `${hostOnly}:9119${rest}`;
+  // 裸 IPv6（多冒号、无括号）→ 包上 [ ] 规范化，避免拼出非法 URL。
+  // 判定用冒号计数（>2 段即裸 IPv6）而非排除 /:\d+$/：末段纯数字的 ::1 / fe80::1 等
+  // 也会被 /:\d+$/ 误判为 host:port 而不加括号，最终拼出 https://::1 非法 URL。
+  const isBareIpv6 = !hostOnly.startsWith("[") && hostOnly.split(":").length > 2;
+  const hostPart = isBareIpv6 ? `[${hostOnly}]` : hostOnly;
+  // 裸 IPv6 的末段也可能是纯数字（::1 / fe80::1 等），不能再用 /:\d+$/ 判 host:port——
+  // 否则会把刚加的括号又丢掉，拼出 https://::1 非法 URL。host:port 判定仅对非裸 IPv6 生效。
+  const withPort = !isBareIpv6 && /:\d+$/.test(hostOnly) ? host : `${hostPart}:9119${rest}`;
   if (hasProto) {
     const proto = /^https/i.test(v) ? "https" : "http";
     return [`${proto}://${withPort}`];
@@ -53,8 +58,12 @@ export function baseCandidates(input: string): string[] {
   return [`https://${withPort}`, `http://${withPort}`];
 }
 
-/** 由 base URL 构造 REST 绝对地址 */
+/** 由 base URL 构造 REST 绝对地址（原生模式；Web 模式请求走相对路径不经过这里） */
 export function restUrl(path: string): string {
+  // Web 部署在子路径下时（location.pathname 非 "/"），同步拼上路径前缀，与 wsUrl 保持一致
+  if (!isNative() && typeof location !== "undefined" && location.pathname && location.pathname !== "/") {
+    return `${location.origin}${location.pathname.replace(/\/+$/, "")}${path}`;
+  }
   return `${getBaseUrl()}${path}`;
 }
 
@@ -66,7 +75,12 @@ export function restUrl(path: string): string {
 export function wsUrl(path: string): string {
   if (!isNative()) {
     const proto = typeof location !== "undefined" && location.protocol === "https:" ? "wss" : "ws";
-    return `${proto}://${location.host}${path}`;
+    // 子路径部署（pathname 非 "/"）时拼到 ws 路径前；根路径部署行为不变
+    const prefix =
+      typeof location !== "undefined" && location.pathname && location.pathname !== "/"
+        ? location.pathname.replace(/\/+$/, "")
+        : "";
+    return `${proto}://${location.host}${prefix}${path}`;
   }
   const base = getBaseUrl();
   const proto = base.startsWith("https") ? "wss" : "ws";

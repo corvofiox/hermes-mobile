@@ -18,6 +18,8 @@ export default function App() {
   const gatewayRef = useRef<HermesGateway | null>(null);
   /** 供 Capacitor 返回键回调读取当前屏幕（避免在 setState updater 里做副作用） */
   const screenRef = useRef<Screen>("boot");
+  /** 打开的弹窗/菜单计数（各弹窗组件通过 hermes:modal-change 事件上报；返回键先关弹窗再退出） */
+  const modalCountRef = useRef(0);
 
   const getGateway = useCallback((): HermesGateway => {
     if (!gatewayRef.current) {
@@ -29,6 +31,18 @@ export default function App() {
   useEffect(() => {
     screenRef.current = screen;
   }, [screen]);
+
+  // 弹窗打开计数：各弹窗组件（ConfirmModal/RenameModal/ModelPicker/菜单）打开/关闭时上报，
+  // 物理返回键据此判断"先关弹窗"而非退出 App
+  useEffect(() => {
+    const onModalChange = (e: Event) => {
+      const open = (e as CustomEvent<{ open?: boolean }>).detail?.open === true;
+      if (open) modalCountRef.current += 1;
+      else modalCountRef.current = Math.max(0, modalCountRef.current - 1);
+    };
+    window.addEventListener("hermes:modal-change", onModalChange);
+    return () => window.removeEventListener("hermes:modal-change", onModalChange);
+  }, []);
 
   // 启动：探测登录态（ticket 能取到 = 已登录）
   useEffect(() => {
@@ -76,6 +90,11 @@ export default function App() {
         const { App } = await import("@capacitor/app");
         if (cancelled) return;
         handle = await App.addListener("backButton", () => {
+          // 有弹窗/菜单打开：先请求关闭（组件自行监听 hermes:modal-close-request），不退出/不导航
+          if (modalCountRef.current > 0) {
+            window.dispatchEvent(new CustomEvent("hermes:modal-close-request"));
+            return;
+          }
           const cur = screenRef.current;
           if (cur === "chat") {
             setActiveSession(null);

@@ -206,6 +206,8 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
   const [busyDelete, setBusyDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<RestSession | null>(null);
   const [bulkDeleting, setBulkDeleting] = useState(false);
+  /** 批量归档执行中（防双击并发 PATCH） */
+  const [bulkArchiving, setBulkArchiving] = useState(false);
   const [renaming, setRenaming] = useState<RestSession | null>(null);
   /** 长按菜单目标会话 */
   const [menuFor, setMenuFor] = useState<RestSession | null>(null);
@@ -220,6 +222,8 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
   const [searching, setSearching] = useState(false);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshingRef = useRef(false);
+  /** 手动重试被并发刷新吞掉时的一次性可见提示 */
+  const [refreshingHint, setRefreshingHint] = useState(false);
 
   // 全部分组 + 各 tab 数量
   const groups = useMemo(() => groupSessions(sessions), [sessions]);
@@ -244,27 +248,28 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     return sessions.filter((s) => classifySession(s) === activeTab);
   }, [sessions, activeTab]);
 
-  const refresh = useCallback(
-    async (silent = false) => {
-      if (refreshingRef.current) return; // 防重入（轮询与手动刷新可能重叠）
-      refreshingRef.current = true;
-      if (!silent) setLoading(true);
-      setError("");
-      try {
-        if (gateway.connectionState !== "open") {
-          await gateway.connect();
-        }
-        const list = await listSessionsRest({ order: "recent", archived: "exclude" });
-        setSessions(list);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        refreshingRef.current = false;
-        if (!silent) setLoading(false);
-      }
-    },
-    [gateway],
-  );
+  // 列表刷新纯 REST，不依赖 WS 连接（避免列表页触发建连/重连）
+  const refresh = useCallback(async (silent = false) => {
+    if (refreshingRef.current) {
+      // 并发刷新（轮询在跑）时手动重试不静默吞掉：给一次性可见提示
+      if (!silent) setRefreshingHint(true);
+      return;
+    }
+    refreshingRef.current = true;
+    if (!silent) setLoading(true);
+    setError("");
+    errorSourceRef.current = "list";
+    try {
+      const list = await listSessionsRest({ order: "recent", archived: "exclude" });
+      setSessions(list);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      refreshingRef.current = false;
+      setRefreshingHint(false);
+      if (!silent) setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     const off = gateway.onConnectionState((s) => setConnState(s));
@@ -289,6 +294,30 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
 
   // 搜索：300ms debounce + 序号守卫（旧请求迟到不覆盖新结果）
   const searchSeqRef = useRef(0);
+  /** 当前错误来源：搜索失败的重试按钮应重跑搜索而非刷新列表 */
+  const errorSourceRef = useRef<"list" | "search">("list");
+
+  const runSearch = useCallback(async (q: string) => {
+    const seq = ++searchSeqRef.current;
+    setSearching(true);
+    try {
+      const results = await searchSessionsRest(q, 30);
+      if (seq !== searchSeqRef.current) return; // 已发出新查询，丢弃旧结果
+      setSearchResults(results);
+      // 搜索成功（含空结果）即清掉残留错误横幅：失败→重试→成功后旧横幅不再滞留到下次轮询。
+      // errorSourceRef 不重置：列表刷新前 refresh() 总会先置 "list"，搜索失败置 "search"，
+      // 成功路径不产生新错误，残留值不影响后续分流。
+      setError("");
+    } catch (err) {
+      if (seq !== searchSeqRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+      errorSourceRef.current = "search";
+      setSearchResults([]);
+    } finally {
+      if (seq === searchSeqRef.current) setSearching(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (searchTimerRef.current) {
       clearTimeout(searchTimerRef.current);
@@ -301,30 +330,31 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       setSearching(false);
       return;
     }
-    const seq = ++searchSeqRef.current;
     setSearching(true);
-    searchTimerRef.current = setTimeout(async () => {
-      try {
-        const results = await searchSessionsRest(q, 30);
-        if (seq !== searchSeqRef.current) return; // 已发出新查询，丢弃旧结果
-        setSearchResults(results);
-      } catch (err) {
-        if (seq !== searchSeqRef.current) return;
-        setError(err instanceof Error ? err.message : String(err));
-        setSearchResults([]);
-      } finally {
-        if (seq === searchSeqRef.current) setSearching(false);
-      }
+    searchTimerRef.current = setTimeout(() => {
+      void runSearch(q);
     }, 300);
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
     };
-  }, [searchQuery]);
+  }, [searchQuery, runSearch]);
 
   // 退出多选模式时清空选择
   useEffect(() => {
     if (!multiMode) setSelected(new Set());
   }, [multiMode]);
+
+  // 长按菜单（ActionSheet）打开状态上报 App（物理返回键感知；RenameModal/ConfirmModal 自行上报）
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("hermes:modal-change", { detail: { open: Boolean(menuFor) } }));
+  }, [menuFor]);
+
+  // 物理返回键按下时（App 转发 hermes:modal-close-request）：关闭长按菜单
+  useEffect(() => {
+    const onCloseRequest = () => setMenuFor(null);
+    window.addEventListener("hermes:modal-close-request", onCloseRequest);
+    return () => window.removeEventListener("hermes:modal-close-request", onCloseRequest);
+  }, []);
 
   /** 切换 tab：多选模式下清空选择（避免跨列表误操作） */
   const switchTab = (key: TabKey) => {
@@ -371,8 +401,9 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     setError("");
     try {
       await setSessionArchivedRest(s.id, true);
-      // 归档后从列表移除（App 不提供归档查看/恢复入口）
+      // 归档后从列表移除（App 不提供归档查看/恢复入口）；搜索结果同步移除
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
+      setSearchResults((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -385,6 +416,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       await deleteSessionRest(s.id);
       clearLastMessage(s.id);
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
+      setSearchResults((prev) => prev.filter((x) => x.id !== s.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -400,6 +432,8 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       await renameSessionRest(s.id, title);
       const patch = (prev: RestSession[]) => prev.map((x) => (x.id === s.id ? { ...x, title } : x));
       setSessions((prev) => patch(prev));
+      // 搜索结果行（含该项时）同步改名
+      setSearchResults((prev) => prev.map((x) => (x.id === s.id ? { ...x, title } : x)));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -422,17 +456,26 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
   };
 
   const bulkArchive = async () => {
+    if (bulkArchiving) return; // 防双击并发 PATCH
     const ids = [...selected];
     if (ids.length === 0) return;
+    setBulkArchiving(true);
     setError("");
-    const { done, failedIds } = await bulkArchiveSessionsRest(ids, true);
-    if (failedIds.length > 0) {
-      setError(`部分归档失败（${done}/${ids.length}）`);
+    try {
+      const { done, failedIds } = await bulkArchiveSessionsRest(ids, true);
+      if (failedIds.length > 0) {
+        setError(`部分归档失败（${done}/${ids.length}）`);
+      }
+      // 只对成功项更新 UI（失败项保留在列表中，避免"幽灵消失"后被轮询拉回）
+      const succeeded = new Set(ids.filter((id) => !failedIds.includes(id)));
+      setSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
+      setSearchResults((prev) => prev.filter((x) => !succeeded.has(x.id)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkArchiving(false);
+      exitMultiMode();
     }
-    // 只对成功项更新 UI（失败项保留在列表中，避免"幽灵消失"后被轮询拉回）
-    const succeeded = new Set(ids.filter((id) => !failedIds.includes(id)));
-    setSessions((prev) => prev.filter((x) => !succeeded.has(x.id)));
-    exitMultiMode();
   };
 
   const bulkDelete = async () => {
@@ -488,9 +531,11 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           <h1>会话</h1>
           <span
             className={`conn-dot ${
-              connState === "open" ? "ok" : connState === "idle" || connState === "connecting" ? "pending" : "down"
+              connState === "open" ? "ok" : connState === "connecting" ? "pending" : connState === "idle" ? "idle" : "down"
             }`}
-            title={connState === "open" ? "已连接" : connState === "idle" || connState === "connecting" ? "连接中…" : "连接断开"}
+            title={
+              connState === "open" ? "已连接" : connState === "connecting" ? "连接中…" : connState === "idle" ? "未连接" : "连接断开"
+            }
           />
         </div>
         {multiMode ? (
@@ -552,9 +597,24 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       {error && (
         <div className="error-banner">
           <span>{error}</span>
-          <button className="btn btn-sm" onClick={() => void refresh()}>
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              // 搜索失败 → 重跑搜索；列表失败 → 刷新列表
+              if (errorSourceRef.current === "search" && searchActive) {
+                void runSearch(searchQuery.trim());
+              } else {
+                void refresh();
+              }
+            }}
+          >
             重试
           </button>
+        </div>
+      )}
+      {refreshingHint && (
+        <div className="error-banner">
+          <span>正在刷新中，请稍候…</span>
         </div>
       )}
 
@@ -598,14 +658,14 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           <span className="bulk-count">已选 {selected.size} 项</span>
           <button
             className="btn"
-            disabled={selected.size === 0 || bulkDeleting}
+            disabled={selected.size === 0 || bulkDeleting || bulkArchiving}
             onClick={() => void bulkArchive()}
           >
-            归档
+            {bulkArchiving ? "归档中…" : "归档"}
           </button>
           <button
             className="btn btn-danger"
-            disabled={selected.size === 0 || bulkDeleting}
+            disabled={selected.size === 0 || bulkDeleting || bulkArchiving}
             onClick={() => {
               setBulkConfirmOpen(true);
             }}
@@ -702,7 +762,8 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           confirmLabel="删除"
           danger
           onCancel={() => setDeleting(null)}
-          onConfirm={() => void remove(deleting)}
+          // 返回 Promise：ConfirmModal 在执行期间显示"处理中…"并禁用按钮
+          onConfirm={() => remove(deleting)}
         />
       )}
 
@@ -715,7 +776,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           onCancel={() => setBulkConfirmOpen(false)}
           onConfirm={() => {
             setBulkConfirmOpen(false);
-            void bulkDelete();
+            return bulkDelete();
           }}
         />
       )}

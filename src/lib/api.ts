@@ -13,7 +13,7 @@
  *   - WS  /api/ws?ticket=<ticket> 升级鉴权（gated 模式拒绝旧 ?token=）
  */
 import { CapacitorHttp } from "@capacitor/core";
-import { getBaseUrl, isNative, restUrl, setBaseUrl } from "./server";
+import { clearBaseUrl, getBaseUrl, isNative, restUrl, setBaseUrl } from "./server";
 
 export class ApiError extends Error {
   constructor(
@@ -67,6 +67,11 @@ function mergeCookiesFromHeader(setCookieValue: string | string[] | undefined): 
 
 // ---- 双路径请求核心 ----
 
+/** 统一请求超时（网络层兜底；服务端慢接口/断网时避免无限挂起） */
+const REQUEST_TIMEOUT_MS = 15_000;
+/** 连通性探测更快的超时 */
+const CHECK_TIMEOUT_MS = 8_000;
+
 interface HttpResult {
   status: number;
   data: unknown;
@@ -79,8 +84,10 @@ interface HttpResult {
 async function httpRequest(
   path: string,
   init: { method?: string; headers?: Record<string, string>; body?: unknown } = {},
-  opts: { silent401?: boolean } = {},
+  opts: { silent401?: boolean; timeoutMs?: number } = {},
 ): Promise<HttpResult> {
+  // 单请求超时覆盖：大文件下载等慢接口传更大 timeoutMs（默认保持 15s 兜底）
+  const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (isNative()) {
     const res = await CapacitorHttp.request({
       url: restUrl(path),
@@ -90,6 +97,8 @@ async function httpRequest(
         ...(getCookieHeader() ? { Cookie: getCookieHeader() } : {}),
       },
       data: init.body as Record<string, unknown> | undefined,
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
     });
     // 提取登录等接口的 Set-Cookie
     const sc = (res.headers as Record<string, string | string[]>)["set-cookie"]
@@ -100,18 +109,36 @@ async function httpRequest(
     }
     return { status: res.status, data: res.data };
   }
-  // Web：相对路径（vite proxy 同源转发）；浏览器自动管理 cookie
-  const res = await fetch(path, {
-    method: init.method ?? "GET",
-    headers: init.headers ?? {},
-    credentials: "include",
-    body: typeof init.body === "string" ? init.body : init.body !== undefined ? JSON.stringify(init.body) : undefined,
-  });
-  if (res.status === 401 && !opts.silent401) {
-    window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
+  // Web：同源请求（vite proxy / 同源站点转发），浏览器自动管理 cookie；
+  // 子路径部署时拼上 location.pathname 前缀（与 wsUrl/restUrl 一致），根路径部署行为不变。
+  // 不复用 restUrl：其根路径分支返回 getBaseUrl() 绝对地址，会破坏同源/代理架构。
+  const webUrl =
+    typeof location !== "undefined" && location.pathname && location.pathname !== "/"
+      ? `${location.origin}${location.pathname.replace(/\/+$/, "")}${path}`
+      : path;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(webUrl, {
+      method: init.method ?? "GET",
+      headers: init.headers ?? {},
+      credentials: "include",
+      signal: controller.signal,
+      body: typeof init.body === "string" ? init.body : init.body !== undefined ? JSON.stringify(init.body) : undefined,
+    });
+    if (res.status === 401 && !opts.silent401) {
+      window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
+    }
+    const data = await res.json().catch(() => null);
+    return { status: res.status, data };
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`请求超时：${path}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  const data = await res.json().catch(() => null);
-  return { status: res.status, data };
 }
 
 /** 用户名/密码登录（basic provider）。原生模式提取 cookie 存储；Web 模式浏览器自动管理 */
@@ -125,7 +152,12 @@ export async function passwordLogin(username: string, password: string): Promise
     },
     { silent401: true }, // 登录 401 = 密码错误，不是会话过期
   );
-  if (status === 200) return (data ?? {}) as LoginResult;
+  if (status === 200) {
+    const d = (data ?? {}) as LoginResult;
+    // 服务端 200 但明确拒绝（{ok:false}）：等同凭据错误，立即停止协议回退
+    if (d.ok === false) throw new ApiError("用户名或密码错误", 401);
+    return d;
+  }
   if (status === 401) throw new ApiError("用户名或密码错误", 401);
   if (status === 429) throw new ApiError("尝试次数过多，请稍后再试", 429);
   throw new ApiError(`登录失败 (HTTP ${status})`, status);
@@ -140,15 +172,22 @@ export async function passwordLoginWithFallback(
   password: string,
   candidates: string[],
 ): Promise<LoginResult> {
+  const original = getBaseUrl();
   let lastErr: unknown = null;
   for (const base of candidates) {
     setBaseUrl(base);
     try {
       return await passwordLogin(username, password);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401) throw err; // 协议已通，凭据错误
+      // 协议已通：401=凭据错误、429=限流，均立即抛出不再回退（429 回退只会徒增一次必失败请求）
+      if (err instanceof ApiError && (err.status === 401 || err.status === 429)) throw err;
       lastErr = err; // 网络层失败 → 回退下一个候选
     }
+  }
+  // 全部候选失败：恢复原地址（或清空），避免失败地址持久化到下次启动
+  if (getBaseUrl() !== original) {
+    if (original) setBaseUrl(original);
+    else clearBaseUrl();
   }
   if (lastErr instanceof ApiError) throw lastErr;
   throw new Error(`无法连接服务器：${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
@@ -175,7 +214,12 @@ export async function getWsTicket(): Promise<WsTicket> {
   if (status !== 200) {
     throw new ApiError(`获取 WS ticket 失败 (HTTP ${status})`, status);
   }
-  return data as WsTicket;
+  // 结构校验：避免 data 为 null/缺字段时解构出 TypeError 误导排查
+  const d = data as WsTicket | null | undefined;
+  if (!d || typeof d !== "object" || typeof d.ticket !== "string" || d.ticket.length === 0) {
+    throw new Error("服务器响应格式异常");
+  }
+  return d;
 }
 
 // ---- 会话 REST API（比 tui_gateway session.list 多了 pinned/source 支持）----
@@ -232,7 +276,8 @@ export async function listSessionsRest(params: {
     // 不用 page.length < PAGE：服务端若未来"钳制"limit（上限收紧后静默降行数），
     // 满页恒不满 PAGE 会提前截断；空页判断在钳制下仍正确（代价：total 缺失时多 1 次空请求）。
     if (page.length === 0 || (typeof total === "number" && all.length >= total)) break;
-    offset += PAGE;
+    // 按实际返回数推进 offset（服务端若钳制 limit，固定步进会跳行）
+    offset += page.length;
     // 防御上限：服务端异常（忽略 offset 恒返满页 / total 异常增长）时防无限请求
     if (offset > 100_000) {
       console.warn(`[listSessionsRest] 分页防御上限触发 offset=${offset}，返回 ${all.length} 条（服务端分页异常？）`);
@@ -322,19 +367,30 @@ export async function checkServer(baseUrl: string): Promise<{ ok: boolean; versi
   const url = `${baseUrl.replace(/\/+$/, "")}/api/status`;
   try {
     if (isNative()) {
-      const res = await CapacitorHttp.request({ url, method: "GET" });
+      const res = await CapacitorHttp.request({
+        url,
+        method: "GET",
+        connectTimeout: CHECK_TIMEOUT_MS,
+        readTimeout: CHECK_TIMEOUT_MS,
+      });
       if (res.status === 200) {
         const d = res.data as { version?: string } | undefined;
         return { ok: true, version: d?.version };
       }
       return { ok: false, detail: `HTTP ${res.status}` };
     }
-    const res = await fetch(url, { method: "GET" });
-    if (res.ok) {
-      const d = (await res.json()) as { version?: string };
-      return { ok: true, version: d.version };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CHECK_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { method: "GET", signal: controller.signal });
+      if (res.ok) {
+        const d = (await res.json()) as { version?: string };
+        return { ok: true, version: d.version };
+      }
+      return { ok: false, detail: `HTTP ${res.status}` };
+    } finally {
+      clearTimeout(timer);
     }
-    return { ok: false, detail: `HTTP ${res.status}` };
   } catch (err) {
     const base = err instanceof Error ? err.message : String(err);
     return {
@@ -419,10 +475,18 @@ export async function downloadFileRest(path: string): Promise<{
 }> {
   const qs = new URLSearchParams();
   qs.set("path", path);
-  const { status, data } = await httpRequest(`/api/files/read?${qs.toString()}`);
+  // 大文件下载（服务端 _MANAGED_FILE_MAX_BYTES=100MB，base64 线载约 133MB）在弱网下
+  // 耗时可能远超默认 15s——传 120s 大超时，规避 M4 统一超时引入的下载回归（1.0.23 无超时
+  // 能完成）。原生分支 readTimeout 为读空闲超时（每次收到数据重置），120s 空闲上限对下载合理。
+  const { status, data } = await httpRequest(`/api/files/read?${qs.toString()}`, {}, { timeoutMs: 120_000 });
   if (status !== 200) {
     const d = (data ?? {}) as { detail?: string };
     return { ok: false, detail: d.detail ?? `下载失败 (HTTP ${status})` };
   }
-  return { ok: true, ...((data ?? {}) as object) };
+  // 类型守卫：仅当 data 为对象才展开（避免字符串/数组等原语污染返回结构）
+  const d = data;
+  if (d && typeof d === "object" && !Array.isArray(d)) {
+    return { ok: true, ...(d as Record<string, unknown>) };
+  }
+  return { ok: true };
 }

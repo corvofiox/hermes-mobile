@@ -115,6 +115,8 @@ export class HermesGateway {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
   private autoReconnect = true;
+  /** 连接代次：close() 递增，使 in-flight connect 失效（防登出后旧 connect 完成 → 空闲 WS 泄漏） */
+  private generation = 0;
 
   constructor() {
     this.client = new JsonRpcGatewayClient({
@@ -159,9 +161,17 @@ export class HermesGateway {
   }
 
   private async doConnect(): Promise<void> {
+    const gen = ++this.generation;
     try {
       const { ticket } = await getWsTicket();
+      // close() 已在等待 ticket 期间发生：放弃建连（不建立 WS）
+      if (gen !== this.generation) return;
       await this.client.connect(`${wsUrl("/api/ws")}?ticket=${encodeURIComponent(ticket)}`);
+      // 竞态窗口（client.connect 挂起期间被 close）：关闭刚建立的 WS
+      if (gen !== this.generation) {
+        this.client.close();
+        return;
+      }
       this.reconnectAttempts = 0;
     } catch (err) {
       // 401/403 = 会话过期：getWsTicket 经 apiFetch 已广播 hermes:unauthorized，
@@ -184,6 +194,7 @@ export class HermesGateway {
   }
 
   close(): void {
+    this.generation += 1; // 使 in-flight connect 失效
     this.autoReconnect = false;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
