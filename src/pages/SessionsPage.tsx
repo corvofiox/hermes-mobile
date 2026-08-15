@@ -4,7 +4,6 @@ import {
   bulkArchiveSessionsRest,
   bulkDeleteSessionsRest,
   deleteSessionRest,
-  getModelPref,
   listSessionsRest,
   renameSessionRest,
   searchSessionsRest,
@@ -370,12 +369,10 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
       if (gateway.connectionState !== "open") {
         await gateway.connect();
       }
-      const pref = getModelPref();
-      const created = await gateway.createSession({
-        // 用用户选择的模型偏好（serve 默认的免费档会被限流 429，实测验证）
-        model: pref.model,
-        provider: pref.provider,
-      });
+      // 模型决策在服务端（1.0.26）：不传 model/provider，由服务端默认决定；
+      // 用户可在会话内通过 ModelPicker 选择 → 服务端 lock（重启后 session.resume 会同步回实际模型）。
+      // 旧行为（本地偏好传 model/provider 防免费档 429）已废弃：免费档限流属服务端默认模型问题，应由服务端调整。
+      const created = await gateway.createSession({});
       // stored id 用于 REST（重命名/删除）；live id 供 ChatPage 直接使用（create 不持久化，resume 会 404）
       onOpenSession(created.stored_session_id, "", created.session_id);
     } catch (err) {

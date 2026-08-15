@@ -431,7 +431,36 @@ export async function getModelOptions(): Promise<ModelOptions> {
   };
 }
 
-// ---- 模型偏好持久化（新会话创建时使用）----
+/**
+ * 锁定会话模型（模型决策在服务端）：POST /api/sessions/{id}/model
+ * body {model, provider}（两者必传）；服务端校验路由并持久化会话模型 lock，
+ * 成功响应 {object:"hermes.session.model_lock", session_id, runtime:{provider, model, model_lock:"accepted"}}。
+ * 400=缺 model/provider；409=模型路由不可达；404=会话未落库（新会话未发送首条消息）。
+ * ⚠️ sessionId 必须用会话列表 REST 返回的 stored id（live id 会 404）——ChatPage 的 sessionId 即 stored id。
+ */
+export async function lockSessionModel(
+  sessionId: string,
+  provider: string,
+  model: string,
+): Promise<{ model: string; provider: string }> {
+  const { status, data } = await httpRequest(
+    `/api/sessions/${encodeURIComponent(sessionId)}/model`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: { model, provider },
+    },
+  );
+  if (status !== 200) throw new ApiError(`锁定模型失败 (HTTP ${status})`, status);
+  // 以服务端 runtime 回执为准（模型决策在服务端，可能规范化 provider/model），字段缺失时回退入参
+  const runtime = (data as { runtime?: Partial<ModelPref> } | null | undefined)?.runtime;
+  return {
+    model: runtime?.model ?? model,
+    provider: runtime?.provider ?? provider,
+  };
+}
+
+// ---- 模型偏好本地持久化（兼容保留：1.0.26 起模型决策移至服务端，模型决策路径不再读写）----
 
 const MODEL_PREF_KEY = "hermes.model.pref";
 

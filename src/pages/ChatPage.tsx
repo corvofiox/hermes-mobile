@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { downloadFileRest, getModelPref, renameSessionRest, setModelPref, type ModelPref } from "../lib/api";
+import { ApiError, downloadFileRest, lockSessionModel, renameSessionRest, type ModelPref } from "../lib/api";
 import { isNative } from "../lib/server";
 import { isSystemMessage, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
@@ -233,8 +233,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const [historyLoading, setHistoryLoading] = useState<boolean>(() => !sessionLiveId);
   /** live id 就绪（ref 写入不触发 re-render，需 state 驱动按钮解禁；新会话初始即就绪） */
   const [liveReady, setLiveReady] = useState<boolean>(() => !!sessionLiveId);
-  /** 模型偏好（新会话生效）；当前会话的模型由 resume 时服务端决定 */
-  const [modelPref, setModelPrefState] = useState<ModelPref>(() => getModelPref());
+  /** 当前会话模型（模型决策在服务端：resume 同步服务端值、选择时写服务端 lock；本地不持久化偏好） */
+  const [modelPref, setModelPrefState] = useState<ModelPref>({ provider: "", model: "" });
   const [showModelPicker, setShowModelPicker] = useState(false);
   /** 已附加待发送的图片 */
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
@@ -266,6 +266,10 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const sendLockRef = useRef(false);
   /** 语音启动 in-flight 守卫（listening state 异步更新，防连点交错 start） */
   const voiceStartLockRef = useRef(false);
+  /** 404 降级待自动重试的模型 lock（组件级内存暂存，禁 localStorage）；首条消息发送成功后 flush */
+  const pendingLockRef = useRef<ModelPref | null>(null);
+  /** 模型 lock 请求 in-flight 守卫（lockSessionModel 返回前忽略新的模型选择，防连选交错） */
+  const lockInFlightRef = useRef(false);
   /** live session_id（resume/create 响应的 session_id），事件过滤/发送/interrupt 都用它 */
   const liveSessionIdRef = useRef<string | null>(null);
   const historyLoaded = useRef(false);
@@ -550,6 +554,25 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       liveSessionIdRef.current = resumed.session_id;
       resumeSucceededRef.current = true;
       setLiveReady(true); // resume 完成解禁按钮（触发 re-render）
+      // 模型决策在服务端：resume 的 info.model 即会话实际模型（含 Web 端 lock 值，resume 时从 DB 恢复），
+      // 同步到内存状态——只更新 state，不写 localStorage（APP 不持有模型偏好）
+      const info = resumed.info as { model?: unknown; provider?: unknown } | undefined;
+      const serverModel = info?.model;
+      const serverProvider = info?.provider;
+      if (typeof serverModel === "string" && serverModel.length > 0) {
+        setModelPrefState((prev) => ({
+          provider:
+            typeof serverProvider === "string" && serverProvider.length > 0
+              ? serverProvider
+              : prev.provider,
+          model: serverModel,
+        }));
+        // NEW-1：resume 同步到服务端权威模型时，作废本地 404 暂存的不同值 pending（服务端优先；
+        // 同值保留不动——服务端已生效同模型时 flush 重试幂等无害；info.model 为空分支不清，保留本地意图）
+        if (pendingLockRef.current && serverModel !== pendingLockRef.current.model) {
+          pendingLockRef.current = null;
+        }
+      }
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
         // 过滤系统/合成消息（后台任务返回/定时激活提示/合成前缀兜底）与 tool 消息
@@ -834,6 +857,9 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       await gateway.submitPrompt(liveSessionIdRef.current, promptText);
       // 提交成功：清掉上次"发送失败"等残留提示，避免流式期间旧错误文本继续展示
       setStatus("");
+      // 发送成功 → 服务端会话已落库：flush 404 降级的 pending lock。
+      // fire-and-forget（内部 try/catch 全吞）：不延迟消息本身、不阻塞发送主流程任何 UI 更新
+      void flushPendingLock();
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -881,6 +907,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       // 重发成功：去掉 ⚠️ 标记（该消息转为正常消息；busy 等 complete 封口后复位）
       setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, error: false } : x)));
       setStatus("");
+      // N2：重发成功 → 服务端会话已落库，flush 404 降级的 pending lock（与 send() 相同模式，不延迟消息本身）
+      void flushPendingLock();
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -916,12 +944,53 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
-  /** 模型选择：持久化偏好（新会话生效） */
-  const handleModelSelect = (pref: ModelPref) => {
-    setModelPrefState(pref);
-    setModelPref(pref);
+  /** 模型选择：写服务端会话 lock（本会话生效）。模型决策在服务端——成功后以服务端回执为准更新显示 */
+  const handleModelSelect = async (pref: ModelPref) => {
+    // lock 请求仍在途（lockSessionModel 未 resolve）：忽略本次选择，不关 picker、不改显示
+    if (lockInFlightRef.current) {
+      setStatus("正在锁定模型，请稍候");
+      return;
+    }
     setShowModelPicker(false);
-    setStatus(`模型已切换为 ${pref.model}（新对话生效）`);
+    lockInFlightRef.current = true;
+    try {
+      // REST lock 需用 stored id（ChatPage 的 sessionId 即会话列表 REST 返回的 id）
+      const locked = await lockSessionModel(sessionId, pref.provider, pref.model);
+      // N1：成功 lock 天然取代任何陈旧 pending（404 暂存后用户又手动选新模型成功，清掉避免下次 flush 锁回旧模型）
+      pendingLockRef.current = null;
+      setModelPrefState(locked);
+      setStatus(`模型已切换为 ${locked.model}（本会话生效）`);
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        // 会话未落库（新会话尚未发送首条消息）：REST lock 404——内存暂存（禁 localStorage）
+        // + 仅内存显示，不阻塞、不抛全局错误；首条消息发送成功后自动重试 lock
+        pendingLockRef.current = pref;
+        setModelPrefState(pref);
+        setStatus("发送消息后将自动锁定所选模型");
+      } else {
+        // 其他失败（409 路由不可达/网络异常等）：保持原模型显示，仅提示错误
+        setStatus(err instanceof Error ? err.message : String(err));
+      }
+    } finally {
+      lockInFlightRef.current = false;
+    }
+  };
+
+  /**
+   * #1 minor：flush 404 降级暂存的 pending lock（调用时机 = 发送成功且服务端会话已落库）。
+   * fire-and-forget：内部 try/catch 全吞，失败静默保留 pending（下次发送消息再试），
+   * 绝不阻塞消息发送主流程；成功则清空 pending 并以最终状态提示用户。
+   */
+  const flushPendingLock = async () => {
+    const pending = pendingLockRef.current;
+    if (!pending) return;
+    try {
+      await lockSessionModel(sessionId, pending.provider, pending.model);
+      pendingLockRef.current = null;
+      setStatus("模型已锁定（本会话生效）");
+    } catch {
+      // 静默：保留 pendingLockRef，下次发送消息再试
+    }
   };
 
   /** 拍照 / 相册选图 → 压缩 base64 → image.attach_bytes 挂载到会话 */
@@ -1432,12 +1501,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
         <div className="composer-model-row">
           <button
             className="model-btn"
-            title="选择模型（新对话生效）"
+            title="选择模型（本会话生效）"
             onClick={() => setShowModelPicker(true)}
           >
-            <span className="model-btn-name">{modelPref.model}</span>
+            {/* 服务端决定前的占位符「—」：不臆造模型名（新会话未选择 / 旧会话 resume 未返回时显示） */}
+            <span className="model-btn-name">{modelPref.model || "—"}</span>
           </button>
-          <span className="composer-model-hint">点此切换模型，新对话生效</span>
+          <span className="composer-model-hint">点此切换模型，本会话生效</span>
         </div>
 
         {/* 已附加图片预览条（独立一行） */}

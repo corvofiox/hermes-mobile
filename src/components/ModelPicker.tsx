@@ -60,7 +60,7 @@ export default function ModelPicker({ current, onSelect, onCancel }: Props) {
   return (
     <div className="sheet-overlay" onClick={onCancel}>
       <div className="action-sheet model-sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-title">选择模型（新对话生效）</div>
+        <div className="sheet-title">选择模型（本会话生效）</div>
 
         {loading && (
           <div className="model-picker-status">
