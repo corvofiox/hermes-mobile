@@ -89,26 +89,43 @@ async function httpRequest(
   // 单请求超时覆盖：大文件下载等慢接口传更大 timeoutMs（默认保持 15s 兜底）
   const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
   if (isNative()) {
-    const res = await CapacitorHttp.request({
-      url: restUrl(path),
-      method: init.method ?? "GET",
-      headers: {
-        ...(init.headers ?? {}),
-        ...(getCookieHeader() ? { Cookie: getCookieHeader() } : {}),
-      },
-      data: init.body as Record<string, unknown> | undefined,
-      connectTimeout: timeoutMs,
-      readTimeout: timeoutMs,
-    });
-    // 提取登录等接口的 Set-Cookie
-    const sc = (res.headers as Record<string, string | string[]>)["set-cookie"]
-      ?? (res.headers as Record<string, string | string[]>)[`Set-Cookie`];
-    if (sc) mergeCookiesFromHeader(sc);
-    if (res.status === 401 && !opts.silent401) {
-      window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
+      // 原生走 CapacitorHttp。看门狗超时：Capacitor 原生桥在连接/读取异常时
+      // 偶发 Promise 既不 resolve 也不 reject（挂死），导致调用方一直等、
+      // `finally` 里的关 spinner 逻辑不执行 → 界面无限转圈。用 Promise.race
+      // 强制兜底，超时后 reject，让上层能关 spinner 并给出可重试错误。
+      return await new Promise<HttpResult>((resolve, reject) => {
+        const watchdog = setTimeout(() => {
+          reject(new ApiError(`请求超时（${timeoutMs}ms）：${path}`, 0));
+        }, timeoutMs + 500);
+        CapacitorHttp.request({
+          url: restUrl(path),
+          method: init.method ?? "GET",
+          headers: {
+            ...(init.headers ?? {}),
+            ...(getCookieHeader() ? { Cookie: getCookieHeader() } : {}),
+          },
+          data: init.body as Record<string, unknown> | undefined,
+          connectTimeout: timeoutMs,
+          readTimeout: timeoutMs,
+        })
+          .then((res) => {
+            clearTimeout(watchdog);
+            // 提取登录等接口的 Set-Cookie
+            const sc = (res.headers as Record<string, string | string[]>)[
+              "set-cookie"
+            ] ?? (res.headers as Record<string, string | string[]>)[`Set-Cookie`];
+            if (sc) mergeCookiesFromHeader(sc);
+            if (res.status === 401 && !opts.silent401) {
+              window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
+            }
+            resolve({ status: res.status, data: res.data });
+          })
+          .catch((err) => {
+            clearTimeout(watchdog);
+            reject(err);
+          });
+      });
     }
-    return { status: res.status, data: res.data };
-  }
   // Web：同源请求（vite proxy / 同源站点转发），浏览器自动管理 cookie；
   // 子路径部署时拼上 location.pathname 前缀（与 wsUrl/restUrl 一致），根路径部署行为不变。
   // 不复用 restUrl：其根路径分支返回 getBaseUrl() 绝对地址，会破坏同源/代理架构。
