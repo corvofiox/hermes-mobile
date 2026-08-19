@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getWsTicket, logout } from "./lib/api";
+import { getBaseUrl } from "./lib/server";
 import { HermesGateway } from "./lib/gateway";
 import LoginPage from "./pages/LoginPage";
 import SessionsPage, { type SessionTabKey } from "./pages/SessionsPage";
@@ -52,6 +53,13 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
+        // 未配置服务器地址 = 必然无法探测（restUrl 会拼出无协议相对路径，
+        // CapacitorHttp 抛 "no protocol" 误导排查——升级换 origin 清空 localStorage 后必现）。
+        // 直接进登录页，等同未登录状态。
+        if (!getBaseUrl()) {
+          setScreen("login");
+          return;
+        }
         await getWsTicket();
         if (!cancelled) setScreen("sessions");
       } catch (err) {
