@@ -307,17 +307,21 @@ export async function listSessionsRest(params: {
     if (status !== 200) throw new ApiError(`获取会话列表失败 (HTTP ${status})`, status);
     const body = (data ?? {}) as { sessions?: RestSession[]; total?: number };
     const page = body.sessions ?? [];
+    let fresh = 0; // 本页去重后新增条数
     for (const s of page) {
       // 动态排序（order=recent）下分页窗口可能重复出现同一行，按 id 去重防虚增/重复渲染
       if (seen.has(s.id)) continue;
       seen.add(s.id);
       all.push(s);
+      fresh += 1;
     }
     const total = body.total;
-    // 双保险终止：本页为空（已到底）或累计达服务端 total（权威计数）。
-    // 不用 page.length < PAGE：服务端若未来"钳制"limit（上限收紧后静默降行数），
-    // 满页恒不满 PAGE 会提前截断；空页判断在钳制下仍正确（代价：total 缺失时多 1 次空请求）。
-    if (page.length === 0 || (typeof total === "number" && all.length >= total)) break;
+    // 三重终止：本页为空 / 累计达服务端 total / 连续零新增。
+    // 零新增是最关键的一层：服务端 list_sessions_rich 会对 pinned 会话做
+    // "offset 越界仍回填固定行"的处理（total 常大于实际可列举条数，且 offset
+    // 越界后每页恒返回同一批已见行），此时 page.length 恒非 0、all 又永远到
+    // 不了 total，若无零新增判定会无限翻页空转（实测 offset 可冲到数千）。
+    if (page.length === 0 || (typeof total === "number" && all.length >= total) || fresh === 0) break;
     // 按实际返回数推进 offset（服务端若钳制 limit，固定步进会跳行）
     offset += page.length;
     // 防御上限：服务端异常（忽略 offset 恒返满页 / total 异常增长）时防无限请求
