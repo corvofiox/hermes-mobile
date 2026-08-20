@@ -70,23 +70,6 @@ function mergeCookiesFromHeader(setCookieValue: string | string[] | undefined): 
 /** 统一请求超时（网络层兜底；服务端慢接口/断网时避免无限挂起） */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-// ---- 诊断日志（v1.0.30）--------------------------------------------------
-// 每个 HTTP 请求的起止/超时/结果记录到一个环形缓冲，供界面在转圈时实时展示，
-// 一次性看透"卡死"到底是网络不通、看门狗超时、还是请求已返回但 UI 未更新。
-type HttpDiagEntry = {
-  event: "start" | "done" | "timeout" | "error";
-  path: string;
-  method?: string;
-  ts: number;
-  status?: number;
-  timeoutMs?: number;
-};
-const DIAG_BUFFER_SIZE = 50;
-export const httpDiag: HttpDiagEntry[] = [];
-export function logHttpDiag(entry: HttpDiagEntry): void {
-  httpDiag.push(entry);
-  if (httpDiag.length > DIAG_BUFFER_SIZE) httpDiag.splice(0, httpDiag.length - DIAG_BUFFER_SIZE);
-}
 /** 连通性探测更快的超时 */
 const CHECK_TIMEOUT_MS = 8_000;
 
@@ -106,8 +89,6 @@ async function httpRequest(
 ): Promise<HttpResult> {
   // 单请求超时覆盖：大文件下载等慢接口传更大 timeoutMs（默认保持 15s 兜底）
   const timeoutMs = opts.timeoutMs ?? REQUEST_TIMEOUT_MS;
-  // 诊断日志（v1.0.30）：每个 HTTP 请求的起止/超时/结果实时记录，供界面/排查
-  logHttpDiag({ event: "start", path, method: init.method ?? "GET", ts: Date.now(), timeoutMs });
   if (isNative()) {
       // 原生走 CapacitorHttp。看门狗超时：Capacitor 原生桥在连接/读取异常时
       // 偶发 Promise 既不 resolve 也不 reject（挂死），导致调用方一直等、
@@ -115,7 +96,6 @@ async function httpRequest(
       // 强制兜底，超时后 reject，让上层能关 spinner 并给出可重试错误。
       return await new Promise<HttpResult>((resolve, reject) => {
         const watchdog = setTimeout(() => {
-          logHttpDiag({ event: "timeout", path, ts: Date.now(), timeoutMs });
           reject(new ApiError(`请求超时（${timeoutMs}ms）：${path}`, 0));
         }, timeoutMs + 500);
         CapacitorHttp.request({
@@ -131,7 +111,6 @@ async function httpRequest(
         })
           .then((res) => {
             clearTimeout(watchdog);
-            logHttpDiag({ event: "done", path, ts: Date.now(), status: res.status });
             // 提取登录等接口的 Set-Cookie
             const sc = (res.headers as Record<string, string | string[]>)[
               "set-cookie"
@@ -169,14 +148,11 @@ async function httpRequest(
       window.dispatchEvent(new CustomEvent("hermes:unauthorized"));
     }
     const data = await res.json().catch(() => null);
-    logHttpDiag({ event: "done", path, ts: Date.now(), status: res.status });
     return { status: res.status, data };
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
-      logHttpDiag({ event: "timeout", path, ts: Date.now(), timeoutMs });
       throw new Error(`请求超时：${path}`);
     }
-    logHttpDiag({ event: "error", path, ts: Date.now() });
     throw err;
   } finally {
     clearTimeout(timer);

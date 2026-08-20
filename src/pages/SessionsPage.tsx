@@ -4,9 +4,7 @@ import {
   bulkArchiveSessionsRest,
   bulkDeleteSessionsRest,
   deleteSessionRest,
-  httpDiag,
   listSessionsRest,
-  logHttpDiag,
   renameSessionRest,
   searchSessionsRest,
   setSessionArchivedRest,
@@ -262,8 +260,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     errorSourceRef.current = "list";
     const hardTimeout = setTimeout(() => {
       // 绝对护栏（v1.0.30）：即便底层 httpRequest 看门狗意外失效、请求永久挂起，
-      // 也强制结束 loading，避免界面无限转圈；显示可重试错误并保留诊断记录。
-      logHttpDiag({ event: "error", path: `HARD_TIMEOUT(refresh ${Date.now()})`, ts: Date.now() });
+      // 也强制结束 loading，避免界面无限转圈；显示可重试错误。
       setError("加载超时，请点击下方重试");
       errorSourceRef.current = "list";
     }, 25_000);
@@ -636,7 +633,7 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
           <ul className="session-list">{searchResults.map(renderItem)}</ul>
         )
       ) : loading ? (
-        <DiagnosticPanel />
+        <div className="center-screen"><div className="spinner" /></div>
       ) : activeItems !== null && activeItems.length === 0 ? (
         <div className="empty">
           <p>该分类暂无会话</p>
@@ -877,52 +874,5 @@ function SessionItem({
                     )}
                   </div>
                 </li>
-              );
-            }
-
-            // 实时诊断面板（v1.0.30）：列表转圈时展示最近一次 HTTP 请求的每个阶段，
-            // 一次看清是"网络不通 / 看门狗超时 / 请求已返回但 UI 未更新"。
-            function DiagnosticPanel() {
-              const start = useRef(Date.now());
-              const [, force] = useState(0);
-              useEffect(() => {
-                const id = setInterval(() => force((n) => n + 1), 1000);
-                return () => clearInterval(id);
-              }, []);
-              const elapsed = Math.round((Date.now() - start.current) / 1000);
-              const recent = httpDiag.slice(-8).reverse();
-              return (
-                <div className="center-screen" style={{ flexDirection: "column", gap: 8, padding: 16 }}>
-                  <div className="spinner" />
-                  <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                    加载中 {elapsed}s · 本次启动已发 {httpDiag.length} 个请求
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 11,
-                      textAlign: "left",
-                      maxWidth: "90%",
-                      background: "rgba(0,0,0,0.06)",
-                      borderRadius: 6,
-                      padding: "6px 8px",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-all",
-                      maxHeight: 160,
-                      overflowY: "auto",
-                    }}
-                  >
-                    {recent.length === 0 ? (
-                      <div className="muted">（尚无 HTTP 请求记录）</div>
-                    ) : (
-                      recent.map((e, i) => (
-                        <div key={i}>
-                          [{e.event.toUpperCase()}] {e.path}
-                          {e.status !== undefined ? ` → ${e.status}` : ""}
-                          {e.timeoutMs ? ` (超时阈值 ${e.timeoutMs}ms)` : ""}
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
               );
             }
