@@ -239,6 +239,27 @@ export class HermesGateway {
     await this.client.request("session.interrupt", { session_id });
   }
 
+  /**
+   * 切换本会话模型（服务端 slash.exec /model，本会话生效，不写全局 config）。
+   * 与桌面端 ModelPicker 同一通道；必须带 --provider <slug>，否则同名模型被
+   * custom 端点与原生 provider 双声明时服务端报歧义、切换不落地。
+   * 服务端恒返回 output 文本（成功/失败都在里面），失败以 ✗ 标记，抛出 Error。
+   */
+  async setSessionModel(
+    session_id: string,
+    provider: string,
+    model: string
+  ): Promise<void> {
+    const { output } = await this.client.request<{ output?: string }>("slash.exec", {
+      session_id,
+      command: `/model ${model} --provider ${provider}`,
+    });
+    const text = String(output ?? "");
+    if (!/✓\s*Model switched/.test(text)) {
+      throw new Error(text.trim().split("\n")[0] || "模型切换未生效");
+    }
+  }
+
   /** 附加图片（base64 直传，服务端写入图片目录并挂载到会话；移动端专用路径） */
   async attachImage(
     session_id: string,

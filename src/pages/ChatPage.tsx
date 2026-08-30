@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ApiError, downloadFileRest, lockSessionModel, renameSessionRest, type ModelPref } from "../lib/api";
+import { downloadFileRest, renameSessionRest, type ModelPref } from "../lib/api";
 import { isNative } from "../lib/server";
 import { isSystemMessage, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
@@ -266,9 +266,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const sendLockRef = useRef(false);
   /** 语音启动 in-flight 守卫（listening state 异步更新，防连点交错 start） */
   const voiceStartLockRef = useRef(false);
-  /** 404 降级待自动重试的模型 lock（组件级内存暂存，禁 localStorage）；首条消息发送成功后 flush */
-  const pendingLockRef = useRef<ModelPref | null>(null);
-  /** 模型 lock 请求 in-flight 守卫（lockSessionModel 返回前忽略新的模型选择，防连选交错） */
+  /** 模型切换请求 in-flight 守卫（slash.exec /model 返回前忽略新的模型选择，防连选交错） */
   const lockInFlightRef = useRef(false);
   /** live session_id（resume/create 响应的 session_id），事件过滤/发送/interrupt 都用它 */
   const liveSessionIdRef = useRef<string | null>(null);
@@ -567,11 +565,6 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
               : prev.provider,
           model: serverModel,
         }));
-        // NEW-1：resume 同步到服务端权威模型时，作废本地 404 暂存的不同值 pending（服务端优先；
-        // 同值保留不动——服务端已生效同模型时 flush 重试幂等无害；info.model 为空分支不清，保留本地意图）
-        if (pendingLockRef.current && serverModel !== pendingLockRef.current.model) {
-          pendingLockRef.current = null;
-        }
       }
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
@@ -857,9 +850,6 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       await gateway.submitPrompt(liveSessionIdRef.current, promptText);
       // 提交成功：清掉上次"发送失败"等残留提示，避免流式期间旧错误文本继续展示
       setStatus("");
-      // 发送成功 → 服务端会话已落库：flush 404 降级的 pending lock。
-      // fire-and-forget（内部 try/catch 全吞）：不延迟消息本身、不阻塞发送主流程任何 UI 更新
-      void flushPendingLock();
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -907,8 +897,6 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       // 重发成功：去掉 ⚠️ 标记（该消息转为正常消息；busy 等 complete 封口后复位）
       setMessages((prev) => prev.map((x) => (x.id === m.id ? { ...x, error: false } : x)));
       setStatus("");
-      // N2：重发成功 → 服务端会话已落库，flush 404 降级的 pending lock（与 send() 相同模式，不延迟消息本身）
-      void flushPendingLock();
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       setBusy(false);
@@ -944,52 +932,31 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
-  /** 模型选择：写服务端会话 lock（本会话生效）。模型决策在服务端——成功后以服务端回执为准更新显示 */
+  /** 模型选择：经 WS slash.exec /model 切换（本会话生效，与桌面端同通道）。
+   *  成功后以服务端回执为准更新显示；WS 对未落库的新会话同样即时生效，无需 REST 时代的 404 暂存重试。 */
   const handleModelSelect = async (pref: ModelPref) => {
-    // lock 请求仍在途（lockSessionModel 未 resolve）：忽略本次选择，不关 picker、不改显示
+    // 切换请求仍在途（slash.exec 未 resolve）：忽略本次选择，不关 picker、不改显示
     if (lockInFlightRef.current) {
-      setStatus("正在锁定模型，请稍候");
+      setStatus("正在切换模型，请稍候");
+      return;
+    }
+    const liveId = liveSessionIdRef.current;
+    if (!liveId) {
+      setStatus("会话未就绪，稍后再试");
       return;
     }
     setShowModelPicker(false);
     lockInFlightRef.current = true;
+    const prevPref = modelPref;
+    setModelPrefState(pref); // 乐观更新显示，失败时回滚
     try {
-      // REST lock 需用 stored id（ChatPage 的 sessionId 即会话列表 REST 返回的 id）
-      const locked = await lockSessionModel(sessionId, pref.provider, pref.model);
-      // N1：成功 lock 天然取代任何陈旧 pending（404 暂存后用户又手动选新模型成功，清掉避免下次 flush 锁回旧模型）
-      pendingLockRef.current = null;
-      setModelPrefState(locked);
-      setStatus(`模型已切换为 ${locked.model}（本会话生效）`);
+      await gateway.setSessionModel(liveId, pref.provider, pref.model);
+      setStatus(`模型已切换为 ${pref.model}（本会话生效）`);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 404) {
-        // 会话未落库（新会话尚未发送首条消息）：REST lock 404——内存暂存（禁 localStorage）
-        // + 仅内存显示，不阻塞、不抛全局错误；首条消息发送成功后自动重试 lock
-        pendingLockRef.current = pref;
-        setModelPrefState(pref);
-        setStatus("发送消息后将自动锁定所选模型");
-      } else {
-        // 其他失败（409 路由不可达/网络异常等）：保持原模型显示，仅提示错误
-        setStatus(err instanceof Error ? err.message : String(err));
-      }
+      setModelPrefState(prevPref); // 回滚显示
+      setStatus(err instanceof Error ? err.message : String(err));
     } finally {
       lockInFlightRef.current = false;
-    }
-  };
-
-  /**
-   * #1 minor：flush 404 降级暂存的 pending lock（调用时机 = 发送成功且服务端会话已落库）。
-   * fire-and-forget：内部 try/catch 全吞，失败静默保留 pending（下次发送消息再试），
-   * 绝不阻塞消息发送主流程；成功则清空 pending 并以最终状态提示用户。
-   */
-  const flushPendingLock = async () => {
-    const pending = pendingLockRef.current;
-    if (!pending) return;
-    try {
-      await lockSessionModel(sessionId, pending.provider, pending.model);
-      pendingLockRef.current = null;
-      setStatus("模型已锁定（本会话生效）");
-    } catch {
-      // 静默：保留 pendingLockRef，下次发送消息再试
     }
   };
 
