@@ -3,7 +3,13 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { downloadFileRest, renameSessionRest, type ModelPref } from "../lib/api";
 import { isNative } from "../lib/server";
-import { isSystemMessage, type GatewayEvent, type HermesGateway, type HistoryMessage } from "../lib/gateway";
+import {
+  isSystemMessage,
+  REASONING_LABELS,
+  type GatewayEvent,
+  type HermesGateway,
+  type HistoryMessage,
+} from "../lib/gateway";
 import RenameModal from "../components/RenameModal";
 import ModelPicker from "../components/ModelPicker";
 
@@ -236,6 +242,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   /** 当前会话模型（模型决策在服务端：resume 同步服务端值、选择时写服务端 lock；本地不持久化偏好） */
   const [modelPref, setModelPrefState] = useState<ModelPref>({ provider: "", model: "" });
   const [showModelPicker, setShowModelPicker] = useState(false);
+  /** 默认值是否已拉取（新会话挂载 / 重连时防重复请求） */
+  const defaultsLoadedRef = useRef(false);
   /** 已附加待发送的图片 */
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   /** 已附加待发送的文件 */
@@ -531,6 +539,44 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     };
   }, [gateway, finalizeStreaming]);
 
+  /**
+   * 拉取服务端默认模型与思考强度，回填显示。
+   *
+   * 为什么必须显式拉：新建会话时 `session.create` 返回的 `info` 只有 model/provider
+   * （methods_session.py:388-395），而 resume 的冷/懒路径（_lazy_resume_info，
+   * server.py:2407-2414）**连 reasoning_effort 都没有** —— 只有 eager 路径才带。
+   * 所以不能靠会话 info，必须查配置。
+   *
+   * 两个只读来源：
+   *   model.options RPC  → 顶层 model/provider 即服务端默认（**裸名**，与 ModelPref 同形状）
+   *   config.get reasoning → { value: "<effort>", display }，回退链 会话覆盖→agent.reasoning_effort→"medium"
+   *
+   * 不用 `config.get provider` 取默认模型：它返回 `provider/model` 全名，且模型名不含 `/` 时
+   * provider 退化为 "unknown"（实测本项目 config 的 model.default = "Qwen3.8-Flash-Next" 即命中该分支），
+   * 会让后续 setSessionModel 发出 `--provider unknown` 而恒定失败。
+   */
+  const loadServerDefaults = useCallback(async () => {
+    if (defaultsLoadedRef.current) return;
+    defaultsLoadedRef.current = true;
+    try {
+      const [opts, reasoning] = await Promise.all([
+        gateway.getModelOptions(),
+        gateway
+          .getConfigValue<{ value?: string }>("reasoning")
+          .catch(() => null as { value?: string } | null),
+      ]);
+      setModelPrefState((prev) => ({
+        // 已有值不覆盖（resume 回填优先）；无值时才用服务端默认
+        provider: prev.provider || opts.provider || "",
+        model: prev.model || opts.model || "",
+        effort: prev.effort ?? reasoning?.value ?? "",
+      }));
+    } catch {
+      // 拉取失败不阻塞会话：显示占位「—」，用户在 picker 里手动选即可
+      defaultsLoadedRef.current = false; // 允许后续重试
+    }
+  }, [gateway]);
+
   // 加载历史（首次打开 / 失败后重试 / 断线重连恢复）
   const doResume = useCallback(async () => {
     if (resumingRef.current) return;
@@ -554,9 +600,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       setLiveReady(true); // resume 完成解禁按钮（触发 re-render）
       // 模型决策在服务端：resume 的 info.model 即会话实际模型（含 Web 端 lock 值，resume 时从 DB 恢复），
       // 同步到内存状态——只更新 state，不写 localStorage（APP 不持有模型偏好）
-      const info = resumed.info as { model?: unknown; provider?: unknown } | undefined;
+      const info = resumed.info as
+        | { model?: unknown; provider?: unknown; reasoning_effort?: unknown }
+        | undefined;
       const serverModel = info?.model;
       const serverProvider = info?.provider;
+      const serverEffort = info?.reasoning_effort;
       if (typeof serverModel === "string" && serverModel.length > 0) {
         setModelPrefState((prev) => ({
           provider:
@@ -564,8 +613,16 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
               ? serverProvider
               : prev.provider,
           model: serverModel,
+          // effort 只在服务端明确返回字符串时覆盖；空串/undefined 表示「未设覆盖」→ 保留原值，
+          // 由后续 loadServerDefaults 拉全局默认兜底（冷/懒 resume 路径不带该字段）
+          effort:
+            typeof serverEffort === "string" && serverEffort.length > 0
+              ? serverEffort
+              : prev.effort,
         }));
       }
+      // 冷/懒 resume 路径的 info 不含 reasoning_effort → 补拉全局默认（已有值时不覆盖）
+      void loadServerDefaults();
       const history = Array.isArray(resumed.messages) ? resumed.messages : [];
       const msgs: Msg[] = history
         // 过滤系统/合成消息（后台任务返回/定时激活提示/合成前缀兜底）与 tool 消息
@@ -696,7 +753,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       resumingRef.current = false;
       setHistoryLoading(false);
     }
-  }, [gateway, sessionId]);
+  }, [gateway, sessionId, loadServerDefaults]);
 
   useEffect(() => {
     if (historyLoaded.current) return;
@@ -706,10 +763,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       liveSessionIdRef.current = sessionLiveId;
       resumeSucceededRef.current = true;
       setLiveReady(true); // 触发 re-render 解禁按钮（ref 写入本身不触发渲染）
+      // 新建会话的 info 不含默认思考强度、且创建时未显式传模型 → 显式拉服务端默认回填
+      void loadServerDefaults();
       return;
     }
     void doResume();
-  }, [gateway, sessionId, sessionLiveId, reloadTick, doResume]);
+  }, [gateway, sessionId, sessionLiveId, reloadTick, doResume, loadServerDefaults]);
 
   // 断线重连成功后：旧 WS 上的 live session 已销毁，重新 resume 恢复 live id 与进行中的回合。
   // 用 wasDisconnectedRef 区分"真断线"与"新会话首挂载的 open 立即回调"：
@@ -932,12 +991,13 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
-  /** 模型选择：经 WS slash.exec /model 切换（本会话生效，与桌面端同通道）。
-   *  成功后以服务端回执为准更新显示；WS 对未落库的新会话同样即时生效，无需 REST 时代的 404 暂存重试。 */
+  /** 模型/思考强度选择：经 WS slash.exec 切换（本会话生效，与桌面端同通道）。
+   *  模型与强度是两条独立命令（/model、/reasoning），只在值真正变化时才发；
+   *  成功后以服务端回执为准更新显示。 */
   const handleModelSelect = async (pref: ModelPref) => {
     // 切换请求仍在途（slash.exec 未 resolve）：忽略本次选择，不关 picker、不改显示
     if (lockInFlightRef.current) {
-      setStatus("正在切换模型，请稍候");
+      setStatus("正在切换，请稍候");
       return;
     }
     const liveId = liveSessionIdRef.current;
@@ -946,12 +1006,31 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       return;
     }
     setShowModelPicker(false);
-    lockInFlightRef.current = true;
+
     const prevPref = modelPref;
+    const modelChanged =
+      pref.model !== prevPref.model || pref.provider !== prevPref.provider;
+    // undefined 表示「本次没动强度」（ModelPicker 未展开强度面板时原样带回）
+    const nextEffort = pref.effort;
+    const effortChanged = nextEffort !== undefined && nextEffort !== prevPref.effort;
+    if (!modelChanged && !effortChanged) return;
+
+    lockInFlightRef.current = true;
     setModelPrefState(pref); // 乐观更新显示，失败时回滚
     try {
-      await gateway.setSessionModel(liveId, pref.provider, pref.model);
-      setStatus(`模型已切换为 ${pref.model}（本会话生效）`);
+      if (modelChanged) {
+        await gateway.setSessionModel(liveId, pref.provider, pref.model);
+      }
+      if (effortChanged && nextEffort) {
+        await gateway.setSessionReasoning(liveId, nextEffort);
+      } else if (effortChanged && !nextEffort) {
+        // 选了「跟随默认」：需真正清除服务端会话覆盖（否则只改了本地显示，服务端仍生效旧值）
+        await gateway.setSessionReasoning(liveId, "reset");
+      }
+      const parts: string[] = [];
+      if (modelChanged) parts.push(`模型 ${pref.model}`);
+      if (effortChanged) parts.push(nextEffort ? `思考强度 ${nextEffort}` : "思考强度已回退默认");
+      setStatus(`${parts.join("、")}（本会话生效）`);
     } catch (err) {
       setModelPrefState(prevPref); // 回滚显示
       setStatus(err instanceof Error ? err.message : String(err));
@@ -1464,7 +1543,8 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       </div>
 
       <footer className="composer">
-        {/* 模型选择独立一行（小屏不被输入行挤压） */}
+        {/* 模型 / 思考强度独立一行（小屏不被输入行挤压）。
+            视觉：无容器底色，两枚白底药丸直接落在 composer 面板上（单层色，去掉三层灰叠）。 */}
         <div className="composer-model-row">
           <button
             className="model-btn"
@@ -1472,9 +1552,22 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
             onClick={() => setShowModelPicker(true)}
           >
             {/* 服务端决定前的占位符「—」：不臆造模型名（新会话未选择 / 旧会话 resume 未返回时显示） */}
+            <span className="model-btn-label">模型</span>
             <span className="model-btn-name">{modelPref.model || "—"}</span>
           </button>
-          <span className="composer-model-hint">点此切换模型，本会话生效</span>
+          <button
+            className={`model-btn effort-btn${modelPref.effort ? " has-value" : ""}`}
+            title="调整思考强度（本会话生效）"
+            onClick={() => setShowModelPicker(true)}
+          >
+            <span className="model-btn-label">思考</span>
+            <span className="model-btn-name">
+              {/* 空串 = 未设会话覆盖，显示「默认」而非「—」：这是有效语义，不是缺失 */}
+              {modelPref.effort
+                ? REASONING_LABELS[modelPref.effort] ?? modelPref.effort
+                : "默认"}
+            </span>
+          </button>
         </div>
 
         {/* 已附加图片预览条（独立一行） */}
@@ -1653,6 +1746,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
 
       {showModelPicker && (
         <ModelPicker
+          gateway={gateway}
           current={modelPref}
           onSelect={handleModelSelect}
           onCancel={() => setShowModelPicker(false)}

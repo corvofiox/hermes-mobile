@@ -1,20 +1,38 @@
 import { useEffect, useRef, useState } from "react";
-import { getModelOptions, type ModelPref, type ModelProvider } from "../lib/api";
+import type { ModelPref } from "../lib/api";
+import {
+  REASONING_EFFORTS,
+  REASONING_LABELS,
+  type HermesGateway,
+} from "../lib/gateway";
 
 interface Props {
-  /** 当前偏好（模型+provider） */
+  /** 当前偏好（模型 + provider + 思考强度） */
   current: ModelPref;
   onSelect: (pref: ModelPref) => void;
   onCancel: () => void;
+  /** 复用 ChatPage 的已连接 gateway：拉模型清单走 WS RPC（不依赖 dashboard REST 路由） */
+  gateway: HermesGateway;
 }
 
-/** 模型选择弹窗：provider → 模型两级；拉 /api/model/options 实时展示 */
-export default function ModelPicker({ current, onSelect, onCancel }: Props) {
-  const [providers, setProviders] = useState<ModelProvider[]>([]);
+/** provider 行的最小形状（服务端 model.options 的 providers[]） */
+interface ProviderRow {
+  slug: string;
+  name?: string;
+  models?: string[];
+  warning?: string;
+  is_current?: boolean;
+}
+
+/** 模型选择弹窗：思考强度（固定档位）+ provider → 模型两级 */
+export default function ModelPicker({ current, onSelect, onCancel, gateway }: Props) {
+  const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   /** 展开的 provider slug（默认展开当前 provider） */
   const [expanded, setExpanded] = useState<string>(current.provider);
+  /** 思考强度面板是否展开（默认收起，避免抢模型列表的视觉重心） */
+  const [effortOpen, setEffortOpen] = useState(false);
   // 稳定回调引用（父组件内联箭头函数每次渲染都是新引用，避免 effect 反复重挂）
   const onCancelRef = useRef(onCancel);
   onCancelRef.current = onCancel;
@@ -34,12 +52,14 @@ export default function ModelPicker({ current, onSelect, onCancel }: Props) {
     let cancelled = false;
     (async () => {
       try {
-        const opts = await getModelOptions();
+        // 走 WS RPC model.options：与 setSessionModel 同通道，不依赖 dashboard 是否挂载 REST 路由
+        const opts = await gateway.getModelOptions();
         if (cancelled) return;
-        setProviders(opts.providers);
-        if (!opts.providers.some((p) => p.slug === current.provider)) {
+        const rows = opts.providers as unknown as ProviderRow[];
+        setProviders(rows);
+        if (!rows.some((p) => p.slug === current.provider)) {
           // 当前 provider 不在列表（如未认证）：展开第一个有模型的
-          const first = opts.providers.find((p) => (p.models?.length ?? 0) > 0);
+          const first = rows.find((p) => (p.models?.length ?? 0) > 0);
           if (first) setExpanded(first.slug);
         }
       } catch (err) {
@@ -51,16 +71,61 @@ export default function ModelPicker({ current, onSelect, onCancel }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [current.provider]);
+  }, [gateway, current.provider]);
 
-  const select = (provider: string, model: string) => {
-    onSelect({ provider, model });
+  /** 仅换思考强度，保留 provider/model（空串 = 清除覆盖、回退全局默认） */
+  const selectEffort = (effort: string) => {
+    onSelect({ provider: current.provider, model: current.model, effort });
   };
+
+  const currentEffort = current.effort ?? "";
 
   return (
     <div className="sheet-overlay" onClick={onCancel}>
       <div className="action-sheet model-sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-title">选择模型（本会话生效）</div>
+        <div className="sheet-title">模型与思考强度（本会话生效）</div>
+
+        {/* 思考强度：固定 8 档，不依赖服务端清单 */}
+        <div className="effort-section">
+          <button
+            className={`effort-head${effortOpen ? " open" : ""}`}
+            onClick={() => setEffortOpen((v) => !v)}
+          >
+            <span className="effort-head-label">思考强度</span>
+            <span className="effort-head-value">
+              {currentEffort
+                ? `${REASONING_LABELS[currentEffort] ?? currentEffort}（${currentEffort}）`
+                : "跟随默认"}
+              <span className="model-chevron">{effortOpen ? "▾" : "▸"}</span>
+            </span>
+          </button>
+          {effortOpen && (
+            <div className="effort-grid">
+              <button
+                className={`effort-item${!currentEffort ? " selected" : ""}`}
+                onClick={() => selectEffort("")}
+              >
+                <span className="effort-item-name">跟随默认</span>
+                <span className="effort-item-hint">不覆盖</span>
+              </button>
+              {REASONING_EFFORTS.map((e) => {
+                const selected = currentEffort === e;
+                return (
+                  <button
+                    key={e}
+                    className={`effort-item${selected ? " selected" : ""}`}
+                    onClick={() => selectEffort(e)}
+                  >
+                    <span className="effort-item-name">{REASONING_LABELS[e] ?? e}</span>
+                    <span className="effort-item-hint">{e}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="model-section-label">模型</div>
 
         {loading && (
           <div className="model-picker-status">
@@ -115,7 +180,13 @@ export default function ModelPicker({ current, onSelect, onCancel }: Props) {
                           <button
                             key={m}
                             className={`model-item${selected ? " selected" : ""}`}
-                            onClick={() => select(p.slug, m)}
+                            onClick={() =>
+                              onSelect({
+                                provider: p.slug,
+                                model: m,
+                                effort: current.effort,
+                              })
+                            }
                           >
                             <span className="model-item-name">{m}</span>
                             {selected && <span className="model-item-check">✓</span>}

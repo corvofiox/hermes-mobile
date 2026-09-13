@@ -465,6 +465,12 @@ const MODEL_PREF_KEY = "hermes.model.pref";
 export interface ModelPref {
   model: string;
   provider: string;
+  /**
+   * 思考强度（reasoning effort）。与模型同为本会话维度的偏好。
+   * 取值：none | minimal | low | medium | high | xhigh | max | ultra
+   * （none = 显式关闭思考；空串 = 未设置，跟随服务端默认）
+   */
+  effort?: string;
 }
 
 export function getModelPref(): ModelPref {

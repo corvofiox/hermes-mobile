@@ -1511,34 +1511,131 @@ button {
   background: rgba(255, 255, 255, 0.28);
 }
 
-/* 模型选择独立行（问题修复：不再与输入栏挤同一行） */
+/* 模型 / 思考强度工具条（对话框上方、附件栏下方那一行）
+   视觉修复：原来「容器灰底 + 按钮灰底 + 白面板」三层色叠加，灰阶互相污染。
+   现改为：容器无底色无内边距，按钮即白底药丸，直接坐在 composer 面板的单一底色上。 */
 .composer-model-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   overflow-x: auto;
   flex-shrink: 0;
-  /* 独立栏位：浅色底 + 分隔线，与附件栏/输入栏明确分区（随主题 ink 变量） */
-  background: color-mix(in srgb, var(--ink) 3%, transparent);
-  border-radius: 10px;
-  padding: 5px 8px;
+  background: none;
+  padding: 0;
+  /* 隐藏横向滚动条（药丸溢出时可滑动但视觉干净） */
+  scrollbar-width: none;
+}
+.composer-model-row::-webkit-scrollbar {
+  display: none;
 }
 .composer-model-row .model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
   max-width: 220px;
   font-size: 12px;
-  padding: 5px 10px;
-  border-radius: 10px;
-  background: rgba(16, 49, 63, 0.05);
-  color: var(--text-dim);
+  padding: 5px 11px;
+  border-radius: var(--radius-pill);
+  /* 唯一一层色：白底 + 细边框，与 composer 面板形成层级但不叠灰 */
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 .composer-model-row .model-btn:active {
   background: var(--accent-dim);
+  border-color: var(--accent2);
   color: var(--accent2);
 }
-.composer-model-hint {
+/* 药丸内的类别标签（「模型」/「思考」）：弱化，不抢值 */
+.model-btn-label {
   font-size: 11px;
   color: var(--text-dim);
-  opacity: 0.7;
+  flex-shrink: 0;
+}
+.model-btn-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--ink);
+}
+/* 思考强度药丸：未设会话覆盖时值显示「默认」，视觉弱化以区分「已覆盖」状态 */
+.effort-btn:not(.has-value) .model-btn-name {
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+/* ---- 思考强度选择面板（ModelPicker 内） ---- */
+.effort-section {
+  margin-bottom: 4px;
+}
+.effort-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--ink);
+}
+.effort-head.open {
+  border-color: var(--accent2);
+}
+.effort-head-label {
+  font-weight: 500;
+}
+.effort-head-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.effort-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+}
+.effort-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 4px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--ink-soft);
+}
+.effort-item.selected {
+  background: var(--accent-dim);
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+.effort-item-name {
+  font-size: 12px;
+  font-weight: 500;
+}
+.effort-item-hint {
+  font-size: 10px;
+  color: var(--text-dim);
+  font-family: var(--font-mono, monospace);
+}
+.effort-item.selected .effort-item-hint {
+  color: var(--accent2);
+}
+/* 模型区小标题：与上方思考强度面板做视觉分隔 */
+.model-section-label {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
 }
 
 /* ========== 文件发送功能 ========== */

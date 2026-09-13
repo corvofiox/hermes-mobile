@@ -103,6 +103,45 @@ export interface CreateSessionResult {
   info?: Record<string, unknown>;
 }
 
+/** 服务端 model.options 返回（方法与 REST /api/model/options 同构） */
+export interface ModelOptionsResult {
+  providers: Array<Record<string, unknown>>;
+  /** 当前默认模型（裸名，不含 provider 前缀） */
+  model?: string;
+  /** 当前默认 provider slug */
+  provider?: string;
+}
+
+/**
+ * 思考强度档位（与后端 command_manifest.py:_REASONING_CHOICES 严格一致）。
+ * `none` = 显式关闭思考（后端 parse_reasoning_effort 转 {"enabled": False}）。
+ * 顺序即 UI 展示顺序（由弱到强）。
+ */
+export const REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** 档位中文标签（UI 展示用；语义对齐后端 zh.yaml 的 level_default/level_disabled） */
+export const REASONING_LABELS: Record<string, string> = {
+  none: "关闭",
+  minimal: "极低",
+  low: "低",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最大",
+  ultra: "极限",
+};
+
 // ---- Gateway 客户端封装 --------------------------------------------------
 
 const RECONNECT_BASE_MS = 1000;
@@ -216,6 +255,8 @@ export class HermesGateway {
     /** 显式模型覆盖（桌面端行为：不传会继承 serve 默认，可能撞免费档限流） */
     model?: string;
     provider?: string;
+    /** 显式思考强度覆盖（PER-SESSION，不写全局 config；不传则继承服务端 agent.reasoning_effort） */
+    reasoning_effort?: string;
   } = {}): Promise<CreateSessionResult> {
     return this.client.request<CreateSessionResult>("session.create", {
       cols: params.cols ?? 50,
@@ -223,6 +264,7 @@ export class HermesGateway {
       messages: params.messages ?? [],
       ...(params.model ? { model: params.model } : {}),
       ...(params.provider ? { provider: params.provider } : {}),
+      ...(params.reasoning_effort ? { reasoning_effort: params.reasoning_effort } : {}),
     });
   }
 
@@ -243,7 +285,13 @@ export class HermesGateway {
    * 切换本会话模型（服务端 slash.exec /model，本会话生效，不写全局 config）。
    * 与桌面端 ModelPicker 同一通道；必须带 --provider <slug>，否则同名模型被
    * custom 端点与原生 provider 双声明时服务端报歧义、切换不落地。
-   * 服务端恒返回 output 文本（成功/失败都在里面），失败以 ✗ 标记，抛出 Error。
+   *
+   * 回执校验：服务端**成功与失败文案均随语言变化**，逐条核对 locales 后确认——
+   *   成功 zh「已切换模型为 `x`」/ en「Model switched to `x`」（均无 ✓ 前缀）
+   *   失败「错误：…」/「Error: …」（error_prefix，**不含任何符号标记**）
+   *   另有 parser 错误硬编码 `❌ …`、告警 `⚠️ …`
+   * 因此既不能按 ✓ 判成功，也不能只按符号判失败（error_prefix 无符号）。
+   * 采用「命中成功文案即成功，否则失败」——对新增失败分支天然安全（一律视为失败）。
    */
   async setSessionModel(
     session_id: string,
@@ -255,9 +303,73 @@ export class HermesGateway {
       command: `/model ${model} --provider ${provider}`,
     });
     const text = String(output ?? "");
-    if (!/✓\s*Model switched/.test(text)) {
+    const ok = /已切换模型为|Model switched to/.test(text);
+    if (!ok) {
       throw new Error(text.trim().split("\n")[0] || "模型切换未生效");
     }
+  }
+
+  /**
+   * 设置本会话思考强度（服务端 slash.exec /reasoning <effort>，本会话生效）。
+   * `none` = 显式关闭思考。传 "reset" 可清除会话覆盖、回退全局默认。
+   *
+   * 回执校验（逐条核对 locales/zh.yaml + en.yaml 后确认）：
+   *   成功「🧠 ✓ 推理强度已设置为 `x`（仅本会话…）」——含 ✓，故不能按 ✓ 判成功
+   *   失败「⚠️ 未知参数：`x`」/「⚠️ 不支持 /reasoning reset --global」/「⚠️ 会话内不支持…」
+   * 采用「命中成功文案即成功，否则失败」，与 setSessionModel 同策略。
+   * 锚点 `推理强度已设置` 同时覆盖 set_session / set_global / set_global_save_failed 三种成功文案。
+   */
+  async setSessionReasoning(session_id: string, effort: string): Promise<void> {
+    const value = effort.trim();
+    if (!value) return;
+    const { output } = await this.client.request<{ output?: string }>("slash.exec", {
+      session_id,
+      command: `/reasoning ${value}`,
+    });
+    const text = String(output ?? "");
+    const ok =
+      /推理强度已设置|已清除本会话的推理覆盖|Reasoning effort set to|Session reasoning override cleared/.test(
+        text,
+      );
+    if (!ok) {
+      throw new Error(text.trim().split("\n")[0] || "思考强度设置未生效");
+    }
+  }
+
+  /**
+   * 拉取模型清单（WS RPC `model.options`，与 REST /api/model/options 同构）。
+   *
+   * 走 WS 而非 REST：REST 版只注册在 gateway 的 api_server 平台（:8642），
+   * 而 App 连的是 dashboard（:9119）—— 无此路由。WS 方法在同一连接上恒可用。
+   * 返回顶层 model/provider 即服务端默认（裸名 + slug），与 ModelPref 形状一致。
+   */
+  async getModelOptions(params: { session_id?: string; refresh?: boolean } = {}): Promise<ModelOptionsResult> {
+    const res = await this.client.request<ModelOptionsResult>("model.options", {
+      ...(params.session_id ? { session_id: params.session_id } : {}),
+      ...(params.refresh ? { refresh: true } : {}),
+    });
+    return {
+      providers: Array.isArray(res?.providers) ? res.providers : [],
+      model: typeof res?.model === "string" ? res.model : "",
+      provider: typeof res?.provider === "string" ? res.provider : "",
+    };
+  }
+
+  /**
+   * 读服务端配置项（WS RPC `config.get`）。常用 key：
+   *   reasoning → { value: "<effort>", display: "show"|"hide" }
+   *   provider  → { model, provider, providers }（注意 model 是 `provider/model` 全名，
+   *               且无 `/` 时 provider 退化为 "unknown" —— 取默认模型别用这个 key）
+   * 未知 key 会以 JSON-RPC error 返回（4002）。
+   */
+  async getConfigValue<T = Record<string, unknown>>(
+    key: string,
+    session_id?: string
+  ): Promise<T> {
+    return this.client.request<T>("config.get", {
+      key,
+      ...(session_id ? { session_id } : {}),
+    });
   }
 
   /** 附加图片（base64 直传，服务端写入图片目录并挂载到会话；移动端专用路径） */
