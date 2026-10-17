@@ -274,7 +274,7 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
   const sendLockRef = useRef(false);
   /** 语音启动 in-flight 守卫（listening state 异步更新，防连点交错 start） */
   const voiceStartLockRef = useRef(false);
-  /** 模型切换请求 in-flight 守卫（slash.exec /model 返回前忽略新的模型选择，防连选交错） */
+  /** 模型切换请求 in-flight 守卫（config.set model 返回前忽略新的模型选择，防连选交错） */
   const lockInFlightRef = useRef(false);
   /** live session_id（resume/create 响应的 session_id），事件过滤/发送/interrupt 都用它 */
   const liveSessionIdRef = useRef<string | null>(null);
@@ -991,11 +991,11 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
     }
   };
 
-  /** 模型/思考强度选择：经 WS slash.exec 切换（本会话生效，与桌面端同通道）。
-   *  模型与强度是两条独立命令（/model、/reasoning），只在值真正变化时才发；
-   *  成功后以服务端回执为准更新显示。 */
+  /** 模型/思考强度选择：经 WS config.set 切换（与桌面端 TUI 同通道，本会话生效）。
+   *  模型与强度是两条独立 key（model、reasoning），只在值真正变化时才发；
+   *  成功以结构化回执 value 判定（不再嗅探多语言文案）。 */
   const handleModelSelect = async (pref: ModelPref) => {
-    // 切换请求仍在途（slash.exec 未 resolve）：忽略本次选择，不关 picker、不改显示
+    // 切换请求仍在途（config.set 未 resolve）：忽略本次选择，不关 picker、不改显示
     if (lockInFlightRef.current) {
       setStatus("正在切换，请稍候");
       return;
@@ -1024,8 +1024,12 @@ export default function ChatPage({ gateway, sessionId, sessionLiveId, sessionTit
       if (effortChanged && nextEffort) {
         await gateway.setSessionReasoning(liveId, nextEffort);
       } else if (effortChanged && !nextEffort) {
-        // 选了「跟随默认」：需真正清除服务端会话覆盖（否则只改了本地显示，服务端仍生效旧值）
-        await gateway.setSessionReasoning(liveId, "reset");
+        // 选了「跟随默认」：TUI WS 通道没有「清除会话覆盖」入口（/reasoning reset 与
+        // config.set 均不支持，实测 4002），改为把全局默认档位写成会话覆盖——行为等于
+        // 回退默认。读全局默认时不能带 session_id（带会混入当前会话的覆盖值）。
+        const def = await gateway.getConfigValue<{ value?: string }>("reasoning");
+        const defEffort = typeof def?.value === "string" && def.value ? def.value : "medium";
+        await gateway.setSessionReasoning(liveId, defEffort);
       }
       const parts: string[] = [];
       if (modelChanged) parts.push(`模型 ${pref.model}`);

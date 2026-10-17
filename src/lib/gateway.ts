@@ -282,57 +282,73 @@ export class HermesGateway {
   }
 
   /**
-   * 切换本会话模型（服务端 slash.exec /model，本会话生效，不写全局 config）。
-   * 与桌面端 ModelPicker 同一通道；必须带 --provider <slug>，否则同名模型被
-   * custom 端点与原生 provider 双声明时服务端报歧义、切换不落地。
+   * 切换本会话模型（WS RPC `config.set` key=model，与桌面端 TUI /model 完全同一通道）。
    *
-   * 回执校验：服务端**成功与失败文案均随语言变化**，逐条核对 locales 后确认——
-   *   成功 zh「已切换模型为 `x`」/ en「Model switched to `x`」（均无 ✓ 前缀）
-   *   失败「错误：…」/「Error: …」（error_prefix，**不含任何符号标记**）
-   *   另有 parser 错误硬编码 `❌ …`、告警 `⚠️ …`
-   * 因此既不能按 ✓ 判成功，也不能只按符号判失败（error_prefix 无符号）。
-   * 采用「命中成功文案即成功，否则失败」——对新增失败分支天然安全（一律视为失败）。
+   * 为什么弃用 slash.exec：slash.exec 的回执是渲染后的多语言文案，成功/失败只能靠
+   * 正则嗅探（1.0.33 的 `/✓\s*Model switched/` 与 1.0.34 的 `/已切换模型为/` 都因
+   * 文案 key 对不上而恒判失败，服务端明明切换成功、客户端却回滚显示），且走
+   * _SlashWorker 子进程 + _mirror_slash_side_effects 二次镜像，链路长、竞态多。
+   * config.set 直达 methods_config_set._set_model → _apply_model_switch，
+   * 返回结构化 JSON：
+   *   成功 { key, value: <模型名>, warning, confirm_required: false, scope: "session" }
+   *   待确认 { confirm_required: true, confirm_message }（昂贵模型二段确认）
+   *   失败 JSON-RPC error（code 5001，message 即原因）
+   * 桌面端 TUI 正是用这个通道（tui_dist entry.js：value 非空即成功）。
+   *
+   * value 语法与 /model 参数一致：`<model> --provider <slug>`。必须带 --provider：
+   * 同名模型被 custom 端点与原生 provider 双声明时，服务端会报歧义拒绝切换。
+   * 已实测：跨 provider（dsh-free-model → openrouter）成功且 /model 回查确认。
    */
   async setSessionModel(
     session_id: string,
     provider: string,
     model: string
   ): Promise<void> {
-    const { output } = await this.client.request<{ output?: string }>("slash.exec", {
+    const res = await this.client.request<{
+      key?: string;
+      value?: string;
+      warning?: string;
+      confirm_required?: boolean;
+      confirm_message?: string;
+      deferred?: boolean;
+      scope?: string;
+    }>("config.set", {
+      key: "model",
       session_id,
-      command: `/model ${model} --provider ${provider}`,
+      value: `${model} --provider ${provider}`,
     });
-    const text = String(output ?? "");
-    const ok = /已切换模型为|Model switched to/.test(text);
-    if (!ok) {
-      throw new Error(text.trim().split("\n")[0] || "模型切换未生效");
+    // 成功判定与桌面端一致：value 非空即已切换（会话范围）
+    if (!res || typeof res.value !== "string" || !res.value) {
+      throw new Error("模型切换未生效");
+    }
+    if (res.confirm_required) {
+      // 昂贵模型需要二次确认：不自动确认，提示用户改选或重试确认
+      throw new Error(
+        (res.confirm_message || res.warning || "该模型需要确认后才能切换").trim(),
+      );
     }
   }
 
   /**
-   * 设置本会话思考强度（服务端 slash.exec /reasoning <effort>，本会话生效）。
+   * 设置本会话思考强度（WS RPC `config.set` key=reasoning，与 setSessionModel 同通道）。
+   * 弃用 slash.exec /reasoning 的理由同 setSessionModel：文案嗅探不可靠，
+   * config.set 返回结构化 { value, warning, confirm_required, scope }。
    * `none` = 显式关闭思考。传 "reset" 可清除会话覆盖、回退全局默认。
-   *
-   * 回执校验（逐条核对 locales/zh.yaml + en.yaml 后确认）：
-   *   成功「🧠 ✓ 推理强度已设置为 `x`（仅本会话…）」——含 ✓，故不能按 ✓ 判成功
-   *   失败「⚠️ 未知参数：`x`」/「⚠️ 不支持 /reasoning reset --global」/「⚠️ 会话内不支持…」
-   * 采用「命中成功文案即成功，否则失败」，与 setSessionModel 同策略。
-   * 锚点 `推理强度已设置` 同时覆盖 set_session / set_global / set_global_save_failed 三种成功文案。
+   * 实测失败路径（未知参数等）返回 JSON-RPC error，无需文案判定。
    */
   async setSessionReasoning(session_id: string, effort: string): Promise<void> {
     const value = effort.trim();
     if (!value) return;
-    const { output } = await this.client.request<{ output?: string }>("slash.exec", {
-      session_id,
-      command: `/reasoning ${value}`,
-    });
-    const text = String(output ?? "");
-    const ok =
-      /推理强度已设置|已清除本会话的推理覆盖|Reasoning effort set to|Session reasoning override cleared/.test(
-        text,
-      );
-    if (!ok) {
-      throw new Error(text.trim().split("\n")[0] || "思考强度设置未生效");
+    const res = await this.client.request<{ value?: string; warning?: string }>(
+      "config.set",
+      {
+        key: "reasoning",
+        session_id,
+        value,
+      },
+    );
+    if (!res || typeof res.value !== "string" || !res.value) {
+      throw new Error((res as { warning?: string })?.warning || "思考强度设置未生效");
     }
   }
 
