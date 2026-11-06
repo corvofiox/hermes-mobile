@@ -319,14 +319,97 @@ export async function searchSessionsRest(q: string, limit = 30): Promise<RestSes
   return ((data as { results?: RestSession[] })?.results) ?? [];
 }
 
+/** Hermes 0.23+ 的会话写操作要求「乐观并发栅栏」(mutation fence)：
+ *  request_id + expected_revision，否则服务端直接 409 client_upgrade_required。
+ *  栅栏快照走专用只读端点 GET /api/sessions/{id}/mutation-snapshot。
+ *  旧服务端（≤0.22）没有该端点 → 返回 null，调用方退回无栅栏请求，保持向后兼容。 */
+interface MutationFence {
+  request_id: string;
+  expected_revision: number;
+  expected_generation?: number;
+}
+
+interface MutationSnapshot {
+  exists: boolean;
+  revision: number;
+  generation: number | null;
+}
+
+/** 生成 request_id（幂等键）。Android WebView 与 Capacitor 原生均有 crypto.randomUUID；
+ *  缺失时退回 32 位十六进制串——服务端只要求它是一个稳定的唯一串。 */
+function newRequestId(): string {
+  const c = globalThis.crypto as Crypto | undefined;
+  if (c && typeof c.randomUUID === "function") return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (c && typeof c.getRandomValues === "function") {
+    c.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 读栅栏快照；旧服务端无此端点时返回 null（调用方走老路径）。 */
+async function getMutationSnapshot(sessionId: string): Promise<MutationSnapshot | null> {
+  const { status, data } = await httpRequest(
+    `/api/sessions/${encodeURIComponent(sessionId)}/mutation-snapshot`,
+  );
+  if (status === 404 || status === 405) return null; // 旧服务端：无栅栏语义
+  if (status !== 200) throw new ApiError(`无法获取会话版本 (HTTP ${status})`, status);
+  const d = data as { runtime_revision?: unknown; runtime_generation?: unknown; exists?: unknown } | undefined;
+  const rev = d?.runtime_revision;
+  if (typeof rev !== "number") throw new ApiError("会话版本响应异常", status);
+  return {
+    exists: d?.exists !== false,
+    revision: rev,
+    generation: typeof d?.runtime_generation === "number" ? d.runtime_generation : null,
+  };
+}
+
+/** 把 409 冲突翻译成用户能懂的提示（新版服务端的几种 refusal 语义不同）。 */
+function conflictError(label: string, status: number, data: unknown): ApiError {
+  const detail = String((data as { detail?: unknown } | undefined)?.detail ?? "");
+  if (detail.includes("session_busy")) {
+    return new ApiError(`会话正在运行，等这一轮结束再${label}`, status);
+  }
+  if (detail.includes("client_upgrade_required") || detail.includes("mutation_identity_required")) {
+    return new ApiError(`服务端要求新版客户端才能${label}，请更新 APP`, status);
+  }
+  if (detail.includes("permission_denied") || detail.includes("profile_mismatch")) {
+    return new ApiError(`没有权限${label}该会话`, status);
+  }
+  return new ApiError(`${label}失败：会话状态冲突 (HTTP ${status})`, status);
+}
+
+/** 执行一次带栅栏的会话写操作：先取快照，再带 request_id/expected_revision 发请求。
+ *  旧服务端（快照端点 404）自动退回无栅栏请求。 */
+async function mutateSession(
+  sessionId: string,
+  label: string,
+  send: (fence: MutationFence | null) => Promise<HttpResult>,
+): Promise<void> {
+  const snap = await getMutationSnapshot(sessionId);
+  const fence: MutationFence | null = snap
+    ? {
+        request_id: newRequestId(),
+        expected_revision: snap.revision,
+        ...(snap.generation !== null ? { expected_generation: snap.generation } : {}),
+      }
+    : null;
+  const { status, data } = await send(fence);
+  if (status === 409) throw conflictError(label, status, data);
+  if (status !== 200) throw new ApiError(`${label}失败 (HTTP ${status})`, status);
+}
+
 /** 归档 / 取消归档会话 */
 export async function setSessionArchivedRest(sessionId: string, archived: boolean): Promise<void> {
-  const { status } = await httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: { archived },
-  });
-  if (status !== 200) throw new ApiError(`归档操作失败 (HTTP ${status})`, status);
+  await mutateSession(sessionId, "归档", (fence) =>
+    httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: { archived, ...(fence ?? {}) },
+    }),
+  );
 }
 
 /** 批量删除会话（单事务） */
@@ -358,30 +441,41 @@ export async function bulkArchiveSessionsRest(
 
 /** 置顶 / 取消置顶会话 */
 export async function setSessionPinnedRest(sessionId: string, pinned: boolean): Promise<void> {
-  const { status } = await httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: { pinned },
-  });
-  if (status !== 200) throw new ApiError(`置顶操作失败 (HTTP ${status})`, status);
+  await mutateSession(sessionId, "置顶", (fence) =>
+    httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: { pinned, ...(fence ?? {}) },
+    }),
+  );
 }
 
 /** 重命名会话 */
 export async function renameSessionRest(sessionId: string, title: string): Promise<void> {
-  const { status } = await httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: { title },
-  });
-  if (status !== 200) throw new ApiError(`重命名失败 (HTTP ${status})`, status);
+  await mutateSession(sessionId, "重命名", (fence) =>
+    httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: { title, ...(fence ?? {}) },
+    }),
+  );
 }
 
-/** 删除会话 */
+/** 删除会话。
+ *  Hermes 0.23+ 的 DELETE 把栅栏当**查询参数**（不是 body）：
+ *    DELETE /api/sessions/{id}?request_id=<uuid>&expected_revision=<int>[&expected_generation=<int>]
+ *  不带则恒 409 client_upgrade_required —— 这就是升级后端后手机删不掉会话的原因。 */
 export async function deleteSessionRest(sessionId: string): Promise<void> {
-  const { status } = await httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
+  await mutateSession(sessionId, "删除", (fence) => {
+    const qs = fence
+      ? `?${new URLSearchParams(
+          Object.entries(fence).map(([k, v]) => [k, String(v)]),
+        ).toString()}`
+      : "";
+    return httpRequest(`/api/sessions/${encodeURIComponent(sessionId)}${qs}`, {
+      method: "DELETE",
+    });
   });
-  if (status !== 200) throw new ApiError(`删除失败 (HTTP ${status})`, status);
 }
 
 /** 探测服务器连通性（设置页用；原生走 CapacitorHttp 绕 CORS，Web 直接 fetch） */
