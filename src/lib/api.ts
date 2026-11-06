@@ -412,15 +412,40 @@ export async function setSessionArchivedRest(sessionId: string, archived: boolea
   );
 }
 
-/** 批量删除会话（单事务） */
-export async function bulkDeleteSessionsRest(ids: string[]): Promise<{ deleted: number }> {
-  const { status, data } = await httpRequest("/api/sessions/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: { ids },
-  });
-  if (status !== 200) throw new ApiError(`批量删除失败 (HTTP ${status})`, status);
-  return (data as { deleted: number }) ?? { deleted: 0 };
+/** 批量删除会话。
+ *
+ *  不能用服务端 `POST /api/sessions/bulk-delete`：该端点走「离线独占维护」路径
+ *  （web_server_sessions._with_session_maintenance → gateway.runtime_ownership
+ *  .exclusive_maintenance），要求先 Drain 并停掉 gateway 才能拿到写锁。而 dashboard
+ *  与 gateway 同时在线（正常部署形态）时这把锁永远拿不到，端点恒返回 409：
+ *    "session write refused: Exclusive maintenance refused:
+ *     Gateway runtime already owns profile /opt/data. Drain and stop the gateway, then retry."
+ *  桌面端也不用它，桌面是逐条走 owner-forward 的 mutation 通道。
+ *
+ *  因此这里逐条调用带栅栏的单删（deleteSessionRest）：单删走 _mutate_session_request
+ *  → 转发给在线的 gateway owner 提交，gateway 在线时正常工作。
+ *  并发 4 条，逐条收集失败项，调用方可据此提示而不是整批回滚。
+ */
+export async function bulkDeleteSessionsRest(
+  ids: string[],
+): Promise<{ deleted: number; failedIds: string[] }> {
+  const failedIds: string[] = [];
+  let deleted = 0;
+  const CONCURRENCY = 4;
+  for (let i = 0; i < ids.length; i += CONCURRENCY) {
+    const batch = ids.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (id) => {
+        try {
+          await deleteSessionRest(id);
+          deleted += 1;
+        } catch {
+          failedIds.push(id);
+        }
+      }),
+    );
+  }
+  return { deleted, failedIds };
 }
 
 /** 批量归档 / 取消归档（服务端无批量接口，逐个 PATCH；返回精确失败列表） */

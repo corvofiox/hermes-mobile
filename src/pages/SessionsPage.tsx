@@ -488,14 +488,15 @@ export default function SessionsPage({ gateway, activeTab, onTabChange, onOpenSe
     setBulkDeleting(true);
     setError("");
     try {
-      const { deleted } = await bulkDeleteSessionsRest(ids);
-      // 服务端对不存在的 id 静默跳过（可能已被其他端删除）——跳过项在服务端已不存在，
-      // 从 UI 移除同样正确；全部移除不会造成"幽灵消失"
-      if (deleted < ids.length) {
-        setError(`部分会话已被其他端删除（实际删除 ${deleted} 个）`);
+      const { deleted, failedIds } = await bulkDeleteSessionsRest(ids);
+      const failed = new Set(failedIds);
+      // 失败项（如正在跑回合被 session_busy 拒绝）必须留在列表里，否则会"幽灵消失"
+      if (failed.size > 0) {
+        setError(`已删除 ${deleted} 个，${failed.size} 个未删除（可能正在运行或状态已变更）`);
       }
-      setSessions((prev) => prev.filter((x) => !selected.has(x.id)));
-      ids.forEach(clearLastMessage);
+      setSessions((prev) => prev.filter((x) => !failed.has(x.id)));
+      setSearchResults((prev) => prev.filter((x) => !failed.has(x.id)));
+      ids.filter((id) => !failed.has(id)).forEach(clearLastMessage);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
